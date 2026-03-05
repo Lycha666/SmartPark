@@ -1,0 +1,1828 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Parkingi Wrocław – Strefy SPP</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css"/>
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js"></script>
+<!-- Firebase SDK -->
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
+import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, where, updateDoc, getDoc, setDoc, increment, orderBy, limit, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBNv_WLV8D-TBv2FLWTPYdPyfga3BLZUkI",
+  authDomain: "parkingi-wroclaw-aa089.firebaseapp.com",
+  projectId: "parkingi-wroclaw-aa089",
+  storageBucket: "parkingi-wroclaw-aa089.firebasestorage.app",
+  messagingSenderId: "159475925835",
+  appId: "1:159475925835:web:03b70cbc2a0733fb661ece",
+  measurementId: "G-N5C88HNN5B"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+// Eksportuj do window żeby reszta skryptu miała dostęp
+window._fbAuth = auth;
+window._fbDb = db;
+window._fbFns = { createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, onAuthStateChanged, updateProfile, collection, addDoc, getDocs, deleteDoc, doc, query, where, updateDoc, getDoc, setDoc, increment, orderBy, limit, serverTimestamp };
+
+// ══════════════════════════════════════════════════════
+// AUTO-SETUP KONTA ADMINA (admin@parkingi.local / admin)
+// ══════════════════════════════════════════════════════
+const ADMIN_EMAIL = 'admin@parkingi.local';
+const ADMIN_PASS  = 'admin123';
+
+async function setupAdminAccount() {
+  try {
+    // Próbuj zalogować admina żeby sprawdzić czy istnieje
+    const cred = await signInWithEmailAndPassword(auth, ADMIN_EMAIL, ADMIN_PASS)
+      .catch(async e => {
+        if (e.code === 'auth/user-not-found' || e.code === 'auth/invalid-credential') {
+          // Utwórz konto admina
+          const c = await createUserWithEmailAndPassword(auth, ADMIN_EMAIL, ADMIN_PASS);
+          await updateProfile(c.user, { displayName: 'Administrator' });
+          return c;
+        }
+        throw e;
+      });
+    // Upewnij się że ma wpis w admins
+    const adminRef = doc(db, 'admins', cred.user.uid);
+    const adminSnap = await getDoc(adminRef);
+    if (!adminSnap.exists()) {
+      await setDoc(adminRef, { email: ADMIN_EMAIL, createdAt: Date.now(), role: 'superadmin' });
+    }
+    // Upewnij się że ma profil
+    const profileRef = doc(db, 'userProfiles', cred.user.uid);
+    const profileSnap = await getDoc(profileRef);
+    if (!profileSnap.exists()) {
+      await setDoc(profileRef, { displayName: 'Administrator', email: ADMIN_EMAIL, createdAt: Date.now(), uid: cred.user.uid });
+    }
+    // Wyloguj jeśli nikt nie był zalogowany
+    await signOut(auth);
+    console.log('✅ Konto admina gotowe');
+  } catch(e) {
+    console.warn('Admin setup:', e.message);
+    try { await signOut(auth); } catch(_){}
+  }
+}
+
+setupAdminAccount();
+
+</script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d0f14;--panel:#13161e;--border:#252a38;
+  --accent:#e8ff47;--a2:#47c8ff;--a3:#ff8c47;--a4:#b47cff;--a5:#47ffb0;--a6:#ff4f7b;
+  --text:#e8eaf0;--muted:#6b7280;--card:#181b25;
+}
+html,body{height:100%;font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);overflow:hidden}
+body{display:flex;flex-direction:column}
+
+header{height:52px;flex-shrink:0;background:var(--panel);border-bottom:1px solid var(--border);display:flex;align-items:center;padding:0 14px;gap:10px}
+.logo{font-weight:800;font-size:.98rem;display:flex;align-items:center;gap:7px;white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 7px var(--accent);animation:pulse 2s infinite}
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.5);opacity:.6}}
+.hstats{margin-left:auto;display:flex;gap:12px}
+.hstat b{color:var(--accent);font-size:.88rem;display:block;text-align:right}
+.hstat span{font-size:.57rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.hbtn{background:var(--a6);color:#fff;border:none;border-radius:7px;padding:5px 11px;font-size:.73rem;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap;transition:opacity .15s}
+.hbtn:hover{opacity:.85}
+
+.body{flex:1;display:flex;overflow:hidden}
+
+/* SIDEBAR */
+#sidebar{width:310px;flex-shrink:0;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column;transition:width .3s,opacity .3s;overflow:hidden}
+#sidebar.collapsed{width:0;opacity:0;pointer-events:none}
+.sb-head{padding:10px 13px 8px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.sb-title{font-size:.66rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);font-weight:600}
+.badge{background:var(--accent);color:#000;font-weight:800;font-size:.67rem;padding:2px 8px;border-radius:20px}
+.filters{padding:6px 8px;border-bottom:1px solid var(--border);display:flex;gap:3px;flex-wrap:wrap}
+.fbtn{font-size:.59rem;padding:2px 7px;border-radius:20px;border:1px solid var(--border);background:transparent;color:var(--muted);cursor:pointer;transition:all .15s;font-family:inherit;white-space:nowrap}
+.fbtn:hover{border-color:var(--accent);color:var(--accent)}
+.fbtn.on{background:var(--accent);color:#000;border-color:var(--accent);font-weight:700}
+.sb-search{padding:6px 8px;border-bottom:1px solid var(--border)}
+.sb-search input{width:100%;background:var(--card);border:1px solid var(--border);border-radius:7px;padding:6px 9px;color:var(--text);font-size:.79rem;outline:none;font-family:inherit}
+.sb-search input:focus{border-color:var(--accent)}
+.sb-search input::placeholder{color:var(--muted)}
+.plist{flex:1;overflow-y:auto;padding:4px 5px}
+.plist::-webkit-scrollbar{width:3px}
+.plist::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.group-label{font-size:.57rem;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);padding:8px 7px 3px;font-weight:700;display:flex;align-items:center;gap:5px}
+.group-label::after{content:'';flex:1;height:1px;background:var(--border)}
+.card{background:var(--card);border:1px solid var(--border);border-radius:7px;padding:8px 10px;margin-bottom:3px;cursor:pointer;transition:border-color .12s;position:relative;overflow:hidden}
+.card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;transform:scaleY(0);transition:transform .15s}
+.card:hover::before,.card.active::before{transform:scaleY(1)}
+.card.t-garage::before{background:var(--a2)}
+.card.t-pr::before{background:var(--a3)}
+.card.t-mall::before{background:var(--a4)}
+.card.t-open::before{background:var(--accent)}
+.card.t-private::before{background:var(--a5)}
+.card.t-custom::before{background:var(--a6)}
+.card:hover{border-color:rgba(255,255,255,.1)}
+.card.active.t-garage{border-color:var(--a2);background:#0d1a22}
+.card.active.t-pr{border-color:var(--a3);background:#1e1608}
+.card.active.t-mall{border-color:var(--a4);background:#130d1a}
+.card.active.t-open{border-color:var(--accent);background:#181d09}
+.card.active.t-private{border-color:var(--a5);background:#091a12}
+.card.active.t-custom{border-color:var(--a6);background:#1a0810}
+.cn{font-weight:700;font-size:.79rem;margin-bottom:1px;line-height:1.3}
+.ca{font-size:.67rem;color:var(--muted);margin-bottom:4px;line-height:1.3}
+.cm{display:flex;gap:3px;flex-wrap:wrap;align-items:center}
+.tag{font-size:.57rem;padding:1px 5px;border-radius:20px;border:1px solid var(--border);color:var(--muted)}
+.ty{background:rgba(232,255,71,.07);color:var(--accent);border-color:rgba(232,255,71,.2)}
+.tb{background:rgba(71,200,255,.07);color:var(--a2);border-color:rgba(71,200,255,.2)}
+.to{background:rgba(255,140,71,.07);color:var(--a3);border-color:rgba(255,140,71,.2)}
+.tv{background:rgba(180,124,255,.07);color:var(--a4);border-color:rgba(180,124,255,.2)}
+.tg{background:rgba(71,255,176,.07);color:var(--a5);border-color:rgba(71,255,176,.2)}
+.tr{background:rgba(255,79,123,.07);color:var(--a6);border-color:rgba(255,79,123,.2)}
+.ptag{font-size:.57rem;padding:1px 6px;border-radius:20px;background:rgba(232,255,71,.1);color:var(--accent);border:1px solid rgba(232,255,71,.22);font-weight:600}
+.zone-a-tag{background:rgba(255,60,60,.12);color:#ff7070;border:1px solid rgba(255,60,60,.3);border-radius:20px;font-size:.57rem;padding:1px 6px}
+.zone-b-tag{background:rgba(255,160,0,.1);color:#ffcc44;border:1px solid rgba(255,160,0,.3);border-radius:20px;font-size:.57rem;padding:1px 6px}
+.zone-spp-tag{background:rgba(100,180,255,.1);color:#64b4ff;border:1px solid rgba(100,180,255,.3);border-radius:20px;font-size:.57rem;padding:1px 6px}
+.del-btn{position:absolute;top:6px;right:7px;background:rgba(255,79,123,.12);border:1px solid rgba(255,79,123,.25);color:var(--a6);border-radius:4px;font-size:.58rem;padding:1px 5px;cursor:pointer;opacity:0;transition:opacity .15s}
+.card:hover .del-btn{opacity:1}
+
+/* MAP */
+.map-wrap{flex:1;position:relative}
+#map{width:100%;height:100%}
+#toggle{position:absolute;left:0;top:50%;transform:translateY(-50%);z-index:1000;background:var(--panel);border:1px solid var(--border);border-left:none;border-radius:0 6px 6px 0;width:18px;height:44px;cursor:pointer;color:var(--muted);font-size:.85rem;display:flex;align-items:center;justify-content:center;transition:color .15s}
+#toggle:hover{color:var(--accent)}
+
+/* INFO PANEL – zone explainer */
+.zone-info{position:absolute;top:12px;right:12px;z-index:1000;width:265px;background:rgba(10,12,18,.96);border:1px solid var(--border);border-radius:12px;padding:13px 14px;font-size:.72rem;line-height:1.6;backdrop-filter:blur(8px)}
+.zi-title{font-weight:800;font-size:.82rem;margin-bottom:8px;display:flex;align-items:center;gap:7px}
+.zi-row{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+.zi-row:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0}
+.zi-dot{width:12px;height:12px;border-radius:3px;flex-shrink:0;margin-top:3px}
+.zi-text b{display:block;font-size:.74rem}
+.zi-text span{color:var(--muted);font-size:.67rem}
+.zi-toggle{position:absolute;top:12px;right:12px;z-index:1001;background:rgba(10,12,18,.9);border:1px solid var(--border);border-radius:8px;padding:5px 10px;font-size:.68rem;cursor:pointer;color:var(--muted);transition:color .15s}
+.zi-toggle:hover{color:var(--accent)}
+
+/* LEGEND bottom-left */
+.legend{position:absolute;left:12px;bottom:12px;z-index:1000;background:rgba(10,12,18,.94);border:1px solid var(--border);border-radius:9px;padding:8px 11px;font-size:.62rem;line-height:1.85}
+.lr{display:flex;align-items:center;gap:6px;color:var(--muted)}
+.ld{width:9px;height:9px;border-radius:50%;flex-shrink:0}
+.legend-sep{height:1px;background:var(--border);margin:5px 0}
+
+/* MODAL */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.65);z-index:5000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(4px)}
+.overlay.hidden{display:none}
+.modal{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:22px 24px;width:400px;max-width:95vw;max-height:90vh;overflow-y:auto}
+.modal-title{font-weight:800;font-size:.98rem;margin-bottom:3px}
+.modal-sub{font-size:.72rem;color:var(--muted);margin-bottom:16px;line-height:1.5}
+.form-row{margin-bottom:12px}
+.form-row label{display:block;font-size:.66rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:4px;font-weight:600}
+.form-row input,.form-row select,.form-row textarea{width:100%;background:var(--card);border:1px solid var(--border);border-radius:7px;padding:7px 9px;color:var(--text);font-size:.82rem;outline:none;font-family:inherit}
+.form-row input:focus,.form-row select:focus,.form-row textarea:focus{border-color:var(--accent)}
+.form-row textarea{resize:none;height:55px}
+.form-row select option{background:var(--panel)}
+.f2{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.modal-hint{background:var(--card);border:1px solid rgba(232,255,71,.2);border-radius:8px;padding:9px 11px;font-size:.7rem;color:var(--muted);margin-bottom:14px;line-height:1.6}
+.modal-hint b{color:var(--accent)}
+.mbtns{display:flex;gap:8px;margin-top:4px}
+.mbtn{flex:1;padding:8px;border-radius:8px;border:none;font-weight:700;font-size:.78rem;cursor:pointer;font-family:inherit;transition:opacity .15s}
+.mbtn:hover{opacity:.85}
+.mbtn-p{background:var(--accent);color:#000}
+.mbtn-s{background:var(--card);color:var(--muted);border:1px solid var(--border)}
+.mbtn-map{background:rgba(255,79,123,.12);color:var(--a6);border:1px solid rgba(255,79,123,.3)}
+.pick-hint{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--a6);color:#fff;padding:10px 20px;border-radius:30px;font-weight:700;font-size:.8rem;z-index:4000;display:none;box-shadow:0 4px 20px rgba(255,79,123,.4);animation:boun .6s ease infinite alternate}
+@keyframes boun{from{transform:translateX(-50%) translateY(0)}to{transform:translateX(-50%) translateY(-5px)}}
+
+/* LEAFLET */
+.leaflet-tile-pane{filter:brightness(.82) saturate(.6) hue-rotate(195deg)}
+.leaflet-control-zoom{border:1px solid var(--border)!important;border-radius:8px!important;overflow:hidden}
+.leaflet-control-zoom-in,.leaflet-control-zoom-out{background:var(--panel)!important;color:var(--text)!important;border:none!important;border-bottom:1px solid var(--border)!important}
+.leaflet-control-zoom-in:hover,.leaflet-control-zoom-out:hover{background:var(--card)!important;color:var(--accent)!important}
+.leaflet-control-attribution{background:rgba(10,12,18,.8)!important;color:var(--muted)!important;font-size:.55rem!important}
+.leaflet-control-attribution a{color:var(--a2)!important}
+.leaflet-popup-content-wrapper{background:var(--panel)!important;border:1px solid var(--border)!important;border-radius:13px!important;box-shadow:0 10px 40px rgba(0,0,0,.75)!important;padding:0!important;color:var(--text)!important}
+.leaflet-popup-content{margin:0!important;min-width:250px;max-width:305px}
+.leaflet-popup-tip{background:var(--panel)!important}
+.leaflet-popup-close-button{color:var(--muted)!important;top:8px!important;right:10px!important;font-size:1rem!important}
+.pu{padding:13px 15px}
+.pu-cat{font-size:.6rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin-bottom:3px}
+.pu-name{font-weight:700;font-size:.88rem;margin-bottom:3px;padding-right:14px;line-height:1.35}
+.pu-addr{font-size:.7rem;color:var(--muted);margin-bottom:7px}
+.pu-tags{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:6px}
+.pu-price{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:7px 9px;margin-bottom:8px;font-size:.69rem;line-height:1.75}
+.pu-price .row{display:flex;justify-content:space-between;gap:8px}
+.pu-price .row span:last-child{color:var(--accent);font-weight:600;white-space:nowrap}
+.pu-price .note{margin-top:3px;color:var(--muted);font-size:.64rem}
+.pu-btn{display:block;background:var(--accent);color:#000;font-weight:700;font-size:.73rem;text-align:center;padding:7px;border-radius:8px;text-decoration:none}
+.pu-btn:hover{opacity:.82}
+.pu-warn{background:rgba(255,79,123,.08);border:1px solid rgba(255,79,123,.25);border-radius:8px;padding:7px 9px;margin-bottom:8px;font-size:.67rem;color:#ff8fa8;line-height:1.5}
+.pu-warn b{color:var(--a6)}
+
+/* Leaflet tooltip dark */
+.leaflet-tooltip{background:rgba(10,12,18,.96)!important;border:1px solid var(--border)!important;color:var(--text)!important;border-radius:8px!important;padding:7px 11px!important;font-size:.72rem!important;box-shadow:0 4px 16px rgba(0,0,0,.5)!important}
+.leaflet-tooltip::before{border-right-color:var(--border)!important}
+
+/* AUTH */
+.auth-overlay{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:8000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px)}
+.auth-overlay.hidden{display:none}
+.auth-modal{background:var(--panel);border:1px solid var(--border);border-radius:16px;padding:28px 28px 24px;width:380px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+.auth-logo{display:flex;align-items:center;gap:8px;margin-bottom:20px}
+.auth-logo .dot{width:10px;height:10px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent);animation:pulse 2s infinite}
+.auth-logo span{font-weight:800;font-size:1rem}
+.auth-tabs{display:flex;gap:0;margin-bottom:22px;background:var(--card);border:1px solid var(--border);border-radius:9px;padding:3px}
+.auth-tab{flex:1;padding:7px;text-align:center;font-size:.78rem;font-weight:700;cursor:pointer;border-radius:6px;border:none;background:transparent;color:var(--muted);font-family:inherit;transition:all .18s}
+.auth-tab.active{background:var(--accent);color:#000}
+.auth-title{font-weight:800;font-size:1rem;margin-bottom:4px}
+.auth-sub{font-size:.73rem;color:var(--muted);margin-bottom:18px;line-height:1.5}
+.auth-row{margin-bottom:13px}
+.auth-row label{display:block;font-size:.63rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);margin-bottom:4px;font-weight:600}
+.auth-row input{width:100%;background:var(--card);border:1px solid var(--border);border-radius:8px;padding:9px 11px;color:var(--text);font-size:.84rem;outline:none;font-family:inherit;transition:border-color .15s}
+.auth-row input:focus{border-color:var(--accent)}
+.auth-btn{width:100%;padding:10px;border-radius:9px;border:none;font-weight:800;font-size:.84rem;cursor:pointer;font-family:inherit;background:var(--accent);color:#000;transition:opacity .15s;margin-top:4px}
+.auth-btn:hover{opacity:.85}
+.auth-err{background:rgba(255,79,123,.1);border:1px solid rgba(255,79,123,.3);border-radius:7px;padding:8px 11px;font-size:.72rem;color:#ff8fa8;margin-bottom:12px;display:none}
+.auth-err.show{display:block}
+.auth-ok{background:rgba(71,255,176,.08);border:1px solid rgba(71,255,176,.25);border-radius:7px;padding:8px 11px;font-size:.72rem;color:#47ffb0;margin-bottom:12px;display:none}
+.auth-ok.show{display:block}
+
+/* USER MENU in header */
+.user-menu{position:relative}
+.user-btn{background:rgba(232,255,71,.1);color:var(--accent);border:1px solid rgba(232,255,71,.25);border-radius:7px;padding:5px 11px;font-size:.73rem;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap;transition:all .15s;display:flex;align-items:center;gap:6px}
+.user-btn:hover{background:rgba(232,255,71,.18)}
+.user-avatar{width:20px;height:20px;border-radius:50%;background:var(--accent);color:#000;font-size:.6rem;font-weight:800;display:flex;align-items:center;justify-content:center}
+.user-dropdown{position:absolute;top:calc(100% + 6px);right:0;background:var(--panel);border:1px solid var(--border);border-radius:10px;min-width:170px;z-index:2000;box-shadow:0 8px 32px rgba(0,0,0,.5);overflow:hidden;display:none}
+.user-dropdown.open{display:block}
+.ud-info{padding:10px 13px 8px;border-bottom:1px solid var(--border)}
+.ud-name{font-weight:700;font-size:.78rem}
+.ud-email{font-size:.63rem;color:var(--muted)}
+.ud-item{padding:9px 13px;font-size:.74rem;cursor:pointer;color:var(--muted);transition:all .15s;border:none;background:none;width:100%;text-align:left;font-family:inherit}
+.ud-item:hover{background:var(--card);color:var(--text)}
+.ud-item.danger:hover{color:var(--a6)}
+
+/* ── NAWIGACJA ── */
+.nav-bar{position:absolute;bottom:0;left:0;right:0;z-index:1000;background:rgba(10,12,18,.97);border-top:1px solid var(--border);padding:10px 14px;display:flex;align-items:center;gap:10px;backdrop-filter:blur(10px);transform:translateY(100%);transition:transform .35s cubic-bezier(.34,1.2,.64,1)}
+.nav-bar.visible{transform:translateY(0)}
+.nav-dot{width:10px;height:10px;border-radius:50%;background:var(--a5);box-shadow:0 0 8px var(--a5);flex-shrink:0;animation:pulse 2s infinite}
+.nav-dest{flex:1;min-width:0}
+.nav-dest-name{font-weight:700;font-size:.82rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.nav-dest-meta{font-size:.67rem;color:var(--muted)}
+.nav-stats{display:flex;gap:10px}
+.nav-stat{text-align:center}
+.nav-stat b{display:block;font-size:.88rem;color:var(--accent);font-weight:800}
+.nav-stat span{font-size:.58rem;color:var(--muted);text-transform:uppercase;letter-spacing:.05em}
+.nav-end-btn{background:rgba(255,79,123,.12);color:var(--a6);border:1px solid rgba(255,79,123,.3);border-radius:8px;padding:6px 11px;font-size:.72rem;font-weight:700;cursor:pointer;white-space:nowrap;font-family:inherit;transition:all .15s}
+.nav-end-btn:hover{background:rgba(255,79,123,.22)}
+.nav-loc-btn{background:rgba(71,255,176,.1);color:var(--a5);border:1px solid rgba(71,255,176,.28);border-radius:8px;padding:5px 10px;font-size:.72rem;font-weight:700;cursor:pointer;white-space:nowrap;font-family:inherit;transition:all .15s;flex-shrink:0}
+.nav-loc-btn:hover{background:rgba(71,255,176,.2)}
+.nav-loc-btn.locating{animation:locpulse 1s infinite}
+@keyframes locpulse{0%,100%{opacity:1}50%{opacity:.4}}
+
+
+/* ── NAWIGACJA – przycisk w popup ── */
+.pu-nav-btn{display:block;background:var(--a5);color:#000;font-weight:700;font-size:.73rem;text-align:center;padding:7px;border-radius:8px;margin-bottom:6px;cursor:pointer;border:none;width:100%;font-family:inherit;transition:opacity .15s}
+.pu-nav-btn:hover{opacity:.82}
+
+/* ── GEO TOAST ── */
+.geo-toast{position:fixed;top:70px;left:50%;transform:translateX(-50%) translateY(-20px);background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px 20px;z-index:9999;font-size:.8rem;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.6);transition:transform .3s,opacity .3s;opacity:0;pointer-events:none;min-width:300px;max-width:90vw}
+.geo-toast.show{transform:translateX(-50%) translateY(0);opacity:1;pointer-events:auto}
+.geo-toast b{color:var(--accent);display:block;font-size:.88rem;margin-bottom:4px}
+.geo-toast-btns{display:flex;gap:7px;margin-top:10px;justify-content:center;flex-wrap:wrap}
+.geo-toast .at-btn{padding:5px 14px;border-radius:6px;border:none;font-size:.72rem;font-weight:700;cursor:pointer;font-family:inherit}
+.geo-toast .at-btn-ok{background:var(--accent);color:#000}
+.geo-toast .at-btn-manual{background:rgba(71,200,255,.12);color:var(--a2);border:1px solid rgba(71,200,255,.3)}
+.geo-toast .at-btn-close{background:none;border:none;color:var(--muted);font-size:.7rem;cursor:pointer;font-family:inherit}
+
+/* ── OPINIE ── */
+.reviews-section{border-top:1px solid var(--border);padding:10px 15px 14px}
+.reviews-title{font-size:.67rem;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:700;margin-bottom:9px;display:flex;align-items:center;justify-content:space-between}
+.star-row{display:flex;gap:3px;margin-bottom:8px}
+.star{font-size:1.3rem;cursor:pointer;transition:transform .15s;color:var(--muted);line-height:1}
+.star.on{color:#ffd700}
+.star:hover{transform:scale(1.25)}
+.review-input{width:100%;background:var(--card);border:1px solid var(--border);border-radius:7px;padding:7px 9px;color:var(--text);font-size:.79rem;outline:none;font-family:inherit;resize:none;height:55px;transition:border-color .15s}
+.review-input:focus{border-color:var(--accent)}
+.review-submit{background:var(--accent);color:#000;font-weight:800;font-size:.75rem;border:none;border-radius:7px;padding:6px 14px;cursor:pointer;font-family:inherit;margin-top:6px;transition:opacity .15s}
+.review-submit:hover{opacity:.85}
+.review-list{margin-top:10px;display:flex;flex-direction:column;gap:7px;max-height:200px;overflow-y:auto}
+.review-item{background:var(--card);border:1px solid var(--border);border-radius:7px;padding:8px 10px}
+.review-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:3px}
+.review-author{font-weight:700;font-size:.72rem}
+.review-stars{color:#ffd700;font-size:.78rem}
+.review-text{font-size:.71rem;color:var(--muted);line-height:1.5}
+.review-date{font-size:.6rem;color:var(--border);margin-top:2px}
+.no-reviews{font-size:.71rem;color:var(--muted);text-align:center;padding:10px 0}
+
+/* ── ADMIN PANEL ── */
+.admin-overlay{position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:9000;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(6px)}
+.admin-overlay.hidden{display:none}
+.admin-modal{background:var(--panel);border:1px solid var(--border);border-radius:16px;width:780px;max-width:98vw;max-height:92vh;display:flex;flex-direction:column;box-shadow:0 24px 80px rgba(0,0,0,.7)}
+.admin-header{padding:16px 22px 14px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-shrink:0}
+.admin-title{font-weight:800;font-size:1rem;flex:1}
+.admin-close{background:none;border:none;color:var(--muted);font-size:1.2rem;cursor:pointer;font-family:inherit;transition:color .15s}
+.admin-close:hover{color:var(--text)}
+.admin-tabs{display:flex;gap:0;padding:0 22px;border-bottom:1px solid var(--border);flex-shrink:0}
+.admin-tab{padding:10px 16px;font-size:.75rem;font-weight:700;cursor:pointer;border:none;background:none;color:var(--muted);font-family:inherit;border-bottom:2px solid transparent;transition:all .15s;white-space:nowrap}
+.admin-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.admin-body{flex:1;overflow-y:auto;padding:16px 22px}
+.admin-table{width:100%;border-collapse:collapse;font-size:.75rem}
+.admin-table th{text-align:left;font-size:.62rem;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);padding:6px 8px;border-bottom:1px solid var(--border);font-weight:700}
+.admin-table td{padding:8px 8px;border-bottom:1px solid rgba(37,42,56,.6);vertical-align:middle}
+.admin-table tr:hover td{background:var(--card)}
+.admin-badge{display:inline-block;padding:2px 7px;border-radius:20px;font-size:.6rem;font-weight:700}
+.badge-ok{background:rgba(71,255,176,.1);color:var(--a5);border:1px solid rgba(71,255,176,.25)}
+.badge-wait{background:rgba(232,255,71,.1);color:var(--accent);border:1px solid rgba(232,255,71,.25)}
+.badge-rej{background:rgba(255,79,123,.1);color:var(--a6);border:1px solid rgba(255,79,123,.25)}
+.badge-admin{background:rgba(71,200,255,.1);color:var(--a2);border:1px solid rgba(71,200,255,.25)}
+.admin-act-btn{padding:3px 9px;border-radius:5px;border:none;font-size:.63rem;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity .15s;margin-right:3px}
+.admin-act-btn:hover{opacity:.75}
+.btn-approve{background:rgba(71,255,176,.15);color:var(--a5);border:1px solid rgba(71,255,176,.3)}
+.btn-reject{background:rgba(255,79,123,.12);color:var(--a6);border:1px solid rgba(255,79,123,.3)}
+.btn-promote{background:rgba(71,200,255,.12);color:var(--a2);border:1px solid rgba(71,200,255,.3)}
+.btn-demote{background:rgba(255,140,71,.1);color:var(--a3);border:1px solid rgba(255,140,71,.3)}
+.btn-delete{background:rgba(255,79,123,.12);color:var(--a6);border:1px solid rgba(255,79,123,.3)}
+.admin-empty{text-align:center;color:var(--muted);padding:30px;font-size:.8rem}
+.admin-stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:18px}
+.admin-stat-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px;text-align:center}
+.admin-stat-card b{display:block;font-size:1.6rem;font-weight:800;color:var(--accent);margin-bottom:2px}
+.admin-stat-card span{font-size:.65rem;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
+.admin-loading{text-align:center;color:var(--muted);padding:40px;font-size:.8rem}
+
+/* AUTH REQUIRED TOAST */
+.auth-toast{position:fixed;bottom:30px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--panel);border:1px solid rgba(232,255,71,.3);border-radius:12px;padding:13px 20px;z-index:9000;font-size:.8rem;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.5);transition:transform .35s cubic-bezier(.34,1.56,.64,1),opacity .35s;opacity:0;pointer-events:none;min-width:280px}
+.auth-toast.show{transform:translateX(-50%) translateY(0);opacity:1;pointer-events:auto}
+.auth-toast b{color:var(--accent);display:block;font-size:.88rem;margin-bottom:3px}
+.auth-toast-btns{display:flex;gap:7px;margin-top:10px;justify-content:center}
+.at-btn{padding:5px 14px;border-radius:6px;border:none;font-size:.72rem;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity .15s}
+.at-btn:hover{opacity:.85}
+.at-btn-login{background:var(--accent);color:#000}
+.at-btn-reg{background:rgba(255,255,255,.08);color:var(--text);border:1px solid var(--border)}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo"><div class="dot"></div> Parkingi Wrocław</div>
+  <div class="hstats">
+    <div class="hstat"><b id="hc">0</b><span>Parkingów</span></div>
+    <div class="hstat"><b id="hv">0</b><span>Widocznych</span></div>
+  </div>
+  <button class="hbtn" id="openAddBtn">＋ Dodaj parking</button>
+  <button class="nav-loc-btn" id="locateBtn" onclick="locateMe()" title="Znajdź moją lokalizację">📍 Moja lokalizacja</button>
+
+  <!-- Guest: show login/register -->
+  <div id="guestBtns" style="display:flex;gap:6px">
+    <button class="hbtn" style="background:transparent;border:1px solid var(--border);color:var(--muted)" onclick="openAuth('login')">Zaloguj się</button>
+    <button class="hbtn" onclick="openAuth('register')">Zarejestruj</button>
+  </div>
+
+  <!-- Logged in: user menu -->
+  <div class="user-menu" id="userMenuWrap" style="display:none">
+    <button class="user-btn" id="userMenuBtn" onclick="toggleUserMenu()">
+      <div class="user-avatar" id="userAvatar">?</div>
+      <span id="userDisplayName">Użytkownik</span> ▾
+    </button>
+    <div class="user-dropdown" id="userDropdown">
+      <div class="ud-info">
+        <div class="ud-name" id="udName"></div>
+        <div class="ud-email" id="udEmail"></div>
+      </div>
+      <button class="ud-item" id="adminBtn" onclick="openAdmin()" style="display:none">🛡 Panel admina</button>
+      <button class="ud-item danger" onclick="logout()">🚪 Wyloguj się</button>
+    </div>
+  </div>
+</header>
+
+<div class="body">
+  <div id="sidebar">
+    <div class="sb-head">
+      <span class="sb-title">Lista parkingów</span>
+      <span class="badge" id="cnt">0</span>
+    </div>
+    <div class="filters">
+      <button class="fbtn on" data-f="all">Wszystkie</button>
+      <button class="fbtn" data-f="garage">🏢 Garaże</button>
+      <button class="fbtn" data-f="mall">🛍 Galerie</button>
+      <button class="fbtn" data-f="pr">🚌 P+R</button>
+      <button class="fbtn" data-f="open">🅿 Naziemne</button>
+      <button class="fbtn" data-f="private">🔒 Strzeżone</button>
+      <button class="fbtn" data-f="custom">⭐ Moje</button>
+      <button class="fbtn" data-f="free">💚 Darmowe</button>
+      <button class="fbtn" data-f="sspp_a">🔴 ŚSPP-A</button>
+      <button class="fbtn" data-f="sspp_b">🟠 ŚSPP-B</button>
+      <button class="fbtn" data-f="spp">🔵 SPP</button>
+    </div>
+    <div class="sb-search"><input id="search" type="text" placeholder="🔍  Szukaj nazwy lub ulicy..."/></div>
+    <div class="plist" id="plist"></div>
+  </div>
+
+  <div class="map-wrap">
+    <button id="toggle">‹</button>
+    <div id="map"></div>
+
+    <!-- ZONE INFO PANEL -->
+    <div class="zone-info" id="zoneInfo">
+      <div class="zi-title">🅿 Strefy parkowania we Wrocławiu</div>
+      <div class="zi-row">
+        <div class="zi-dot" style="background:#ff3c3c;border:2px solid #ff6060"></div>
+        <div class="zi-text">
+          <b>Śródmiejska SPP – Obszar A</b>
+          <span>7 zł/h (progresywna: 7→7,3→7,7→7 zł)<br>Czynna: <b>pn–nd 9:00–20:00</b><br>Płatność: parkomat, SkyCash, AnyPark<br>⚠️ Brak parkometru ≠ brak obowiązku!</span>
+        </div>
+      </div>
+      <div class="zi-row">
+        <div class="zi-dot" style="background:#ff8800;border:2px solid #ffaa44"></div>
+        <div class="zi-text">
+          <b>Śródmiejska SPP – Obszar B</b>
+          <span>5 zł/h (progresywna: 5→5,2→5,4→5 zł)<br>Czynna: <b>pn–nd 9:00–20:00</b><br>⚠️ Nie ma parkometru? Płać appką!</span>
+        </div>
+      </div>
+      <div class="zi-row">
+        <div class="zi-dot" style="background:#2288ff;border:2px solid #55aaff"></div>
+        <div class="zi-text">
+          <b>Strefa Płatnego Parkowania (SPP)</b>
+          <span>3 zł/h (progresywna: 3→3,2→3,4→3 zł)<br>Czynna: <b>pn–pt 9:00–18:00</b><br>Weekendy i święta: <b style="color:#47ffb0">BEZPŁATNE</b></span>
+        </div>
+      </div>
+      <div class="zi-row">
+        <div class="zi-dot" style="background:#47ffb0;border:2px solid #80ffc8"></div>
+        <div class="zi-text">
+          <b>Poza strefą – bezpłatnie</b>
+          <span>Brak obowiązku opłaty.<br>Sprawdź znak D-44 na wjeździe!</span>
+        </div>
+      </div>
+      <div style="font-size:.63rem;color:var(--muted);margin-top:6px;padding-top:6px;border-top:1px solid var(--border)">
+        💡 Mandat za brak opłaty: <b style="color:var(--a6)">360 zł</b> — kontrola codziennie!<br>
+        🔗 Sprawdź mapę: <a href="https://spp.zdium.wroc.pl" target="_blank" style="color:var(--a2)">spp.zdium.wroc.pl</a>
+      </div>
+    </div>
+
+    <div class="legend">
+      <div style="font-size:.61rem;font-weight:700;color:var(--text);margin-bottom:3px">PARKINGI</div>
+      <div class="lr"><div class="ld" style="background:#47c8ff"></div> Garaż / wielopoziomowy</div>
+      <div class="lr"><div class="ld" style="background:#b47cff"></div> Galeria / atrakcja</div>
+      <div class="lr"><div class="ld" style="background:#e8ff47"></div> Parking naziemny</div>
+      <div class="lr"><div class="ld" style="background:#ff8c47"></div> Park & Ride</div>
+      <div class="lr"><div class="ld" style="background:#47ffb0"></div> Parking strzeżony</div>
+      <div class="lr"><div class="ld" style="background:#ff4f7b"></div> Mój parking</div>
+    </div>
+
+    <!-- PASEK NAWIGACJI -->
+    <div class="nav-bar" id="navBar">
+      <div class="nav-dot"></div>
+      <div class="nav-dest">
+        <div class="nav-dest-name" id="navDestName">—</div>
+        <div class="nav-dest-meta" id="navDestMeta">Wyznaczanie trasy...</div>
+      </div>
+      <div class="nav-stats">
+        <div class="nav-stat"><b id="navDist">—</b><span>km</span></div>
+        <div class="nav-stat"><b id="navTime">—</b><span>min</span></div>
+      </div>
+      <a id="navGoogleLink" href="#" target="_blank" style="display:none;background:rgba(71,200,255,.15);color:var(--a2);border:1px solid rgba(71,200,255,.3);border-radius:8px;padding:6px 10px;font-size:.7rem;font-weight:700;text-decoration:none;white-space:nowrap;align-items:center;gap:4px">🗺 Google Maps</a>
+      <button class="nav-end-btn" onclick="endNavigation()">✕ Zakończ</button>
+    </div>
+  </div>
+</div>
+
+<!-- AUTH MODAL -->
+<div class="auth-overlay hidden" id="authOverlay">
+  <div class="auth-modal">
+    <div class="auth-logo"><div class="dot"></div><span>Parkingi Wrocław</span></div>
+    <div class="auth-tabs">
+      <button class="auth-tab active" id="tabLogin" onclick="switchTab('login')">Logowanie</button>
+      <button class="auth-tab" id="tabRegister" onclick="switchTab('register')">Rejestracja</button>
+    </div>
+
+    <!-- LOGIN -->
+    <div id="formLogin">
+      <div class="auth-title">Witaj z powrotem!</div>
+      <div class="auth-sub">Zaloguj się, aby dodawać własne parkingi i zarządzać nimi.</div>
+      <div class="auth-err" id="loginErr"></div>
+      <div style="background:rgba(71,200,255,.07);border:1px solid rgba(71,200,255,.2);border-radius:8px;padding:8px 11px;font-size:.68rem;color:#88ccee;margin-bottom:12px;line-height:1.6">
+        🛡 <b>Konto administratora:</b><br>
+        Login: <b style="color:var(--a2)"><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="a6c7c2cbcfc8e6d6c7d4cdcfc8c1cf88cac9c5c7ca">[email&#160;protected]</a></b> &nbsp;|&nbsp; Hasło: <b style="color:var(--a2)">admin123</b>
+      </div>
+      <div class="auth-row"><label>Adres e-mail</label><input id="l-email" type="email" placeholder="twoj@email.pl" autocomplete="email"/></div>
+      <div class="auth-row"><label>Hasło</label><input id="l-pass" type="password" placeholder="••••••••" autocomplete="current-password"/></div>
+      <button class="auth-btn" onclick="doLogin()">Zaloguj się →</button>
+    </div>
+
+    <!-- REGISTER -->
+    <div id="formRegister" style="display:none">
+      <div class="auth-title">Utwórz konto</div>
+      <div class="auth-sub">Zarejestruj się bezpłatnie i zacznij dodawać własne parkingi.</div>
+      <div class="auth-err" id="regErr"></div>
+      <div class="auth-ok" id="regOk"></div>
+      <div class="auth-row"><label>Imię / pseudonim</label><input id="r-name" type="text" placeholder="np. Marek" autocomplete="given-name"/></div>
+      <div class="auth-row"><label>Adres e-mail</label><input id="r-email" type="email" placeholder="twoj@email.pl" autocomplete="email"/></div>
+      <div class="auth-row"><label>Hasło (min. 6 znaków)</label><input id="r-pass" type="password" placeholder="••••••••" autocomplete="new-password"/></div>
+      <div class="auth-row"><label>Powtórz hasło</label><input id="r-pass2" type="password" placeholder="••••••••" autocomplete="new-password"/></div>
+      <button class="auth-btn" onclick="doRegister()">Zarejestruj się →</button>
+    </div>
+
+    <div style="text-align:center;margin-top:16px">
+      <button onclick="closeAuth()" style="background:none;border:none;color:var(--muted);font-size:.72rem;cursor:pointer;font-family:inherit">✕ Zamknij</button>
+    </div>
+  </div>
+</div>
+
+<!-- AUTH TOAST (not logged in) -->
+<div class="auth-toast" id="authToast">
+  <b>🔒 Wymagane logowanie</b>
+  Aby dodać parking, musisz być zalogowany.
+  <div class="auth-toast-btns">
+    <button class="at-btn at-btn-login" onclick="hideToast();openAuth('login')">Zaloguj się</button>
+    <button class="at-btn at-btn-reg" onclick="hideToast();openAuth('register')">Zarejestruj</button>
+    <button class="at-btn" style="background:none;border:none;color:var(--muted);font-size:.7rem;cursor:pointer;font-family:inherit" onclick="hideToast()">Anuluj</button>
+  </div>
+</div>
+
+<!-- ADD MODAL -->
+<div class="overlay hidden" id="overlay">
+  <div class="modal">
+    <div class="modal-title">➕ Dodaj własny parking</div>
+    <div class="modal-sub">Wpisz dane lub kliknij "Wskaż na mapie" i kliknij dowolne miejsce.</div>
+    <div class="modal-hint">💡 <b>Wskazówka:</b> Jeśli nie wiesz w której strefie jesteś — wejdź na <b>spp.zdium.wroc.pl</b> i sprawdź lokalizację parkometru.</div>
+    <div class="form-row"><label>Nazwa parkingu *</label><input id="f-name" type="text" placeholder="np. Parking przy pracy"/></div>
+    <div class="form-row"><label>Adres / opis</label><input id="f-addr" type="text" placeholder="np. ul. Świdnicka 10"/></div>
+    <div class="form-row"><label>Typ parkingu</label>
+      <select id="f-type">
+        <option value="open">🅿 Naziemny / uliczny</option>
+        <option value="garage">🏢 Garaż / podziemny</option>
+        <option value="private">🔒 Prywatny / strzeżony</option>
+        <option value="pr">🚌 Park & Ride</option>
+        <option value="mall">🛍 Przy galerii</option>
+      </select>
+    </div>
+    <div class="f2">
+      <div class="form-row"><label>Strefa SPP</label>
+        <select id="f-zone">
+          <option value="">– nie wiem / poza strefą –</option>
+          <option value="sspp_a">🔴 Śróm. SPP – Obszar A (7 zł/h, 7 dni)</option>
+          <option value="sspp_b">🟠 Śróm. SPP – Obszar B (5 zł/h, 7 dni)</option>
+          <option value="spp">🔵 SPP (3 zł/h, pn–pt)</option>
+          <option value="free">💚 Bezpłatna / poza strefą</option>
+        </select>
+      </div>
+      <div class="form-row"><label>Cena (opcjonalnie)</label><input id="f-price" type="text" placeholder="np. 5 zł/h"/></div>
+    </div>
+    <div class="f2">
+      <div class="form-row"><label>Ocena (1–5)</label><input id="f-rating" type="number" min="1" max="5" step="0.1" placeholder="4.0"/></div>
+      <div class="form-row"><label>Czynny całą dobę?</label>
+        <select id="f-open"><option value="1">Tak – 24/7</option><option value="0">Nie</option></select>
+      </div>
+    </div>
+    <div class="form-row"><label>Uwagi</label><textarea id="f-note" placeholder="np. Monitoring, wolne miejsca po 18:00..."></textarea></div>
+    <div class="f2">
+      <div class="form-row"><label>Szerokość (lat) *</label><input id="f-lat" type="number" step="0.000001" placeholder="51.1079"/></div>
+      <div class="form-row"><label>Długość (lng) *</label><input id="f-lng" type="number" step="0.000001" placeholder="17.0385"/></div>
+    </div>
+    <div class="mbtns" style="margin-bottom:9px">
+      <button class="mbtn mbtn-map" id="pickMapBtn">📍 Wskaż na mapie</button>
+    </div>
+    <div class="mbtns">
+      <button class="mbtn mbtn-s" id="cancelBtn">Anuluj</button>
+      <button class="mbtn mbtn-p" id="saveBtn">💾 Zapisz parking</button>
+    </div>
+  </div>
+</div>
+<div class="pick-hint" id="pickHint">Kliknij na mapie, aby wskazać lokalizację parkingu</div>
+
+<!-- GEO ERROR TOAST -->
+<div class="geo-toast" id="geoToast">
+  <b id="geoToastTitle">📍 Lokalizacja niedostępna</b>
+  <span id="geoToastMsg">Aby korzystać z nawigacji, zezwól na dostęp do lokalizacji.</span>
+  <div class="geo-toast-btns">
+    <button class="at-btn at-btn-manual" onclick="startManualLocation()">📌 Ustaw ręcznie na mapie</button>
+    <button class="geo-toast at-btn-close" onclick="hideGeoToast()">✕</button>
+  </div>
+</div>
+
+<!-- ADMIN PANEL MODAL -->
+<div class="admin-overlay hidden" id="adminOverlay">
+  <div class="admin-modal">
+    <div class="admin-header">
+      <div style="font-size:1.1rem">🛡</div>
+      <div class="admin-title">Panel Administracyjny</div>
+      <button class="admin-close" onclick="closeAdmin()">✕</button>
+    </div>
+    <div class="admin-tabs">
+      <button class="admin-tab active" onclick="adminShowTab('stats')" id="aTab-stats">📊 Statystyki</button>
+      <button class="admin-tab" onclick="adminShowTab('parkings')" id="aTab-parkings">🅿 Parkingi do weryfikacji</button>
+      <button class="admin-tab" onclick="adminShowTab('users')" id="aTab-users">👥 Użytkownicy</button>
+      <button class="admin-tab" onclick="adminShowTab('reviews')" id="aTab-reviews">💬 Opinie</button>
+    </div>
+    <div class="admin-body" id="adminBody">
+      <div class="admin-loading">⏳ Ładowanie...</div>
+    </div>
+  </div>
+</div>
+
+<script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script>
+// ══════════════════════════════════════════════════════════════
+// STREFY SPP – OFICJALNE GRANICE wg uchwały Rady Miejskiej
+// Śródmiejska SPP (ŚSPP) – obszar A i B: pn–nd 9:00–20:00
+// SPP zewnętrzna: pn–pt 9:00–18:00
+// ══════════════════════════════════════════════════════════════
+
+// OBSZAR A – ścisłe centrum (Rynek + bezpośrednie otoczenie)
+// Granica: Świdnicka, Podwale (ring fosy), Nowy Świat, Kazimierza Wlk., Piaskowa, Śwk. Katarzyny, Błog. Czesława
+const ZONE_A_COORDS = [
+  [51.11260,17.02700],[51.11320,17.02950],[51.11340,17.03250],
+  [51.11330,17.03550],[51.11280,17.03820],[51.11200,17.04050],
+  [51.11060,17.04120],[51.10960,17.04080],[51.10870,17.03900],
+  [51.10820,17.03680],[51.10820,17.03400],[51.10850,17.03150],
+  [51.10890,17.02980],[51.10940,17.02820],[51.11020,17.02680],
+  [51.11120,17.02620],[51.11200,17.02650]
+];
+
+// OBSZAR B – szersze centrum (granica ŚSPP minus obszar A)
+// Granica: Most Mieszczański, Dubois, Kurkowa, Składowa, Łowiecka, Reymonta, Most Osobowicki,
+// Kanał Miejski, Most Szczytnicki, al. Kochanowskiego, Kopernika, Wróblewskiego, Wajdy,
+// Most Zwierzyniecki, Zwierzyniecka, Śląska, Wiśniowa, Traugutta, Kościuszki, Piłsudskiego (granica)
+const ZONE_B_COORDS = [
+  // Północ – Most Mieszczański → Dubois → Kurkowa
+  [51.11550,17.03900],[51.11620,17.03600],[51.11680,17.03200],
+  [51.11700,17.02850],[51.11680,17.02500],[51.11600,17.02150],
+  [51.11480,17.01900],[51.11300,17.01700],[51.11080,17.01600],
+  // Zachód
+  [51.10850,17.01580],[51.10650,17.01620],[51.10450,17.01700],
+  [51.10200,17.01850],[51.09950,17.02100],[51.09780,17.02400],
+  // Południe – Piłsudskiego, Traugutta
+  [51.09650,17.02750],[51.09580,17.03100],[51.09580,17.03500],
+  [51.09600,17.03900],[51.09680,17.04300],[51.09820,17.04700],
+  // Wschód – Kościuszki, Wróblewskiego, Most Zwierzyniecki
+  [51.10050,17.05100],[51.10300,17.05500],[51.10600,17.05750],
+  [51.10900,17.05850],[51.11150,17.05700],[51.11380,17.05350],
+  [51.11530,17.04900],[51.11600,17.04450],[51.11580,17.04050],
+  [51.11570,17.03900]
+];
+
+// SPP ZEWNĘTRZNA – szerszy pierścień wokół centrum
+// (poza ŚSPP, do linii kolejowej i dużych ulic obwodowych)
+const ZONE_SPP_COORDS = [
+  // Północ: Most Osobowicki, Reymonta, Kanał Miejski
+  [51.12800,17.01800],[51.12900,17.02500],[51.12850,17.03200],
+  [51.12750,17.03900],[51.12600,17.04600],[51.12350,17.05300],
+  // Wschód: Wróblewskiego, Wystawowa, Wajdy
+  [51.12000,17.06200],[51.11600,17.06900],[51.11100,17.07200],
+  [51.10600,17.07400],[51.10100,17.07100],[51.09700,17.06500],
+  // Południe: Śląska, Powstańców Śląskich
+  [51.09300,17.05800],[51.09000,17.05000],[51.08750,17.04200],
+  [51.08650,17.03300],[51.08650,17.02400],[51.08700,17.01500],
+  // Zachód: linia kolejowa, Legnicka
+  [51.08900,17.00600],[51.09200,16.99900],[51.09700,16.99400],
+  [51.10300,16.99100],[51.10900,16.99200],[51.11500,16.99600],
+  [51.12100,17.00200],[51.12600,17.01000],[51.12800,17.01800]
+];
+
+// ══════════════════════════════════════════════════════════════
+// DANE PARKINGÓW
+// ══════════════════════════════════════════════════════════════
+const BUILT_IN = [
+  // GARAŻE I PODZIEMNE
+  {n:"Interparking NFM",                a:"pl. Wolności 1",                     lat:51.10718,lng:17.02696,r:4.5,open:1,t:"garage",zone:"sspp_b",free:0,price:{h1:"9 zł",h24:"30–40 zł",note:"Rezerwacja online – taniej"}},
+  {n:"Parking Nowy Targ",               a:"pl. Nowy Targ 29",                   lat:51.11085,lng:17.03839,r:4.1,open:1,t:"garage",zone:"sspp_b",free:0,price:{h1:"9 zł",h24:"—",note:"Każda godz. droższa od poprzedniej"}},
+  {n:"Parking NFM Krupnicza",           a:"ul. Kazimierza Wlk. 35",             lat:51.10693,lng:17.02921,r:4.5,open:1,t:"garage",zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"30 zł",note:"Rezerwacja QR"}},
+  {n:"Parking PEGAZ",                   a:"ul. Grabarska 1",                    lat:51.11074,lng:17.02630,r:4.2,open:1,t:"garage",zone:"sspp_b",free:0,price:{h1:"8 zł",h24:"70–90 zł",note:"Wąskie miejsca"}},
+  {n:"Parking podziemny Grabarska",     a:"ul. Grabarska 2",                    lat:51.11107,lng:17.02513,r:4.2,open:1,t:"garage",zone:"sspp_b",free:0,price:{h1:"7 zł",h24:"—",note:"15 min gratis"}},
+  {n:"Parking Wratislavia Tower",       a:"ul. Świętego Antoniego 7",           lat:51.10915,lng:17.02562,r:3.9,open:1,t:"garage",zone:"sspp_b",free:0,price:{h1:"7 zł",h24:"—",note:"Ciasne miejsca"}},
+  {n:"Parking Wratislavia Center",      a:"ul. Rzeźnicza 5",                    lat:51.11099,lng:17.02835,r:3.0,open:1,t:"garage",zone:"sspp_b",free:0,price:{h1:"12–20 zł",h24:"—",note:"Bardzo drogie, strome rampy"}},
+  {n:"Parking Łaciarska",               a:"ul. Łaciarska 4",                    lat:51.10762,lng:17.03473,r:2.8,open:1,t:"garage",zone:"sspp_a",free:0,price:{h1:"15 zł",h24:"—",note:"Najdroższy – centrum Rynku"}},
+  {n:"Parking Bulvary",                 a:"ul. Księcia Witolda 11",             lat:51.11420,lng:17.04150,r:4.0,open:1,t:"garage",zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"40 zł",note:"Dobra lokalizacja przy Odrze"}},
+  {n:"Parking Helios",                  a:"ul. Kazimierza Wlk. 19",            lat:51.10980,lng:17.02980,r:3.8,open:0,t:"garage",zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"—",note:"Czynny w godz. kina"}},
+  {n:"Parking pl. Solny (podz.)",       a:"pl. Solny",                          lat:51.10990,lng:17.03180,r:3.7,open:1,t:"garage",zone:"sspp_a",free:0,price:{h1:"6 zł",h24:"—",note:"Blisko Rynku"}},
+  {n:"Parking Szczepińska (podz.)",     a:"ul. Szczepińska",                    lat:51.11163,lng:17.01841,r:4.5,open:1,t:"garage",zone:"sspp_b",free:0,price:{h1:"8 zł",h24:"—",note:"Centrum zachodnie"}},
+  {n:"Parking Justin Center",           a:"ul. Krawiecka 1",                    lat:51.10650,lng:17.02450,r:3.8,open:1,t:"garage",zone:"sspp_b",free:0,price:{h1:"7 zł",h24:"—",note:"Blisko pl. Wolności"}},
+  {n:"Parking Forum Musicum",           a:"pl. Wolności – biurowiec",           lat:51.10830,lng:17.02550,r:3.8,open:1,t:"garage",zone:"sspp_b",free:0,price:{h1:"7 zł",h24:"—",note:"Podziemny biurowca"}},
+  {n:"Parking Retro Office House",      a:"ul. Piłsudskiego / Komandorska",     lat:51.09950,lng:17.02950,r:3.7,open:1,t:"garage",zone:"spp",free:0,price:{h1:"6 zł",h24:"—",note:"Podziemny biurowca"}},
+  {n:"Parking Infinity (JP II)",        a:"pl. Jana Pawła II – biurowiec",      lat:51.09720,lng:17.02150,r:3.8,open:1,t:"garage",zone:"spp",free:0,price:{h1:"6 zł",h24:"—",note:"Podziemny Infinity"}},
+  {n:"Parking Kościuszki 109A",         a:"ul. T. Kościuszki 109A",             lat:51.09980,lng:17.04340,r:3.5,open:1,t:"garage",zone:"spp",free:0,price:{h1:"5 zł",h24:"—",note:"Blisko PKP"}},
+  {n:"Parking Kazimierza Wlk. 46",      a:"ul. Kazimierza Wlk. 46",            lat:51.10782,lng:17.03101,r:4.0,open:1,t:"garage",zone:"sspp_a",free:0,price:{h1:"7 zł",h24:"—",note:"Centrum"}},
+  {n:"Parking Wszystkich Świętych",     a:"ul. Wszystkich Świętych",            lat:51.11050,lng:17.03450,r:3.8,open:1,t:"garage",zone:"sspp_b",free:0,price:{h1:"6 zł",h24:"—",note:"Blisko Rynku"}},
+  {n:"Parking ul. Jagiełły",            a:"ul. Władysława Jagiełły",            lat:51.10400,lng:17.03700,r:3.6,open:1,t:"garage",zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"—",note:"Centrum południowe"}},
+  {n:"Parking pod Mostem Univ.",        a:"przy Moście Uniwersyteckim",         lat:51.11350,lng:17.04000,r:3.5,open:1,t:"open",  zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"—",note:"Przy Odrze, strefa B"}},
+  {n:"Parking Ostrów Tumski",           a:"ul. Świętego Marcina",               lat:51.11450,lng:17.04500,r:3.6,open:1,t:"open",  zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"—",note:"Blisko katedry"}},
+  {n:"Parking Centrum Zielińskiego",    a:"ul. T. Zielińskiego 6",             lat:51.10147,lng:17.02468,r:4.3,open:1,t:"open",  zone:"spp",free:0,price:{h1:"3 zł",h24:"39 zł",note:"Od 2. doby 19 zł/doba"}},
+  {n:"Parking ul. Purkyniego / ASP",   a:"ul. Purkyniego / Styki",            lat:51.10480,lng:17.03960,r:3.6,open:1,t:"open",  zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"—",note:"Przy ASP"}},
+  {n:"Parking pl. Solidarności",        a:"pl. Solidarności",                   lat:51.11550,lng:17.03850,r:3.5,open:1,t:"open",  zone:"spp",free:0,price:{h1:"3 zł",h24:"—",note:"Strefa SPP"}},
+  {n:"Parking ul. Ładna",               a:"ul. Ładna",                          lat:51.10700,lng:17.05200,r:3.6,open:1,t:"open",  zone:"spp",free:0,price:{h1:"3 zł",h24:"—",note:"Strefa SPP"}},
+  {n:"Parking Urząd Wojewódzki",        a:"pl. Powstańców Warszawy",            lat:51.10180,lng:17.03500,r:3.6,open:1,t:"open",  zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"—",note:"Strefa B"}},
+  {n:"Parking pl. Społeczny (Nadodrze)",a:"pl. Społeczny",                      lat:51.11800,lng:17.04100,r:3.5,open:1,t:"open",  zone:"spp",free:0,price:{h1:"3 zł",h24:"—",note:"Strefa SPP, Nadodrze"}},
+  {n:"Parking ul. Ołbińska",            a:"ul. Ołbińska",                       lat:51.12100,lng:17.04000,r:3.6,open:1,t:"open",  zone:"spp",free:0,price:{h1:"3 zł",h24:"—",note:"Strefa SPP"}},
+  {n:"Parking ul. Długa (Nadodrze)",    a:"ul. Długa",                          lat:51.11900,lng:17.03900,r:3.5,open:1,t:"open",  zone:"spp",free:1,price:{h1:"0 zł",h24:"0 zł",note:"Darmowe po 18:00 i weekendy"}},
+  {n:"Parking Piłsudskiego 74",         a:"ul. Piłsudskiego 74",                lat:51.10550,lng:17.02100,r:3.9,open:1,t:"open",  zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"—",note:"Strefa B"}},
+  {n:"Parking Komuny Paryskiej",        a:"ul. Komuny Paryskiej",               lat:51.10850,lng:17.02100,r:3.6,open:1,t:"open",  zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"—",note:"Blisko pl. Wolności"}},
+  {n:"Parking ul. Biskupa Nankera",     a:"ul. Biskupa Nankera",                lat:51.11300,lng:17.03100,r:3.6,open:1,t:"open",  zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"—",note:"Przy Odrze"}},
+  {n:"Parking ul. Ofiar Oświęcimskich", a:"ul. Ofiar Oświęcimskich",            lat:51.11200,lng:17.03700,r:3.4,open:1,t:"open",  zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"—",note:"Strefa B"}},
+  {n:"Parking ul. Ruska",               a:"ul. Ruska",                          lat:51.11000,lng:17.03500,r:3.5,open:1,t:"open",  zone:"sspp_a",free:0,price:{h1:"7 zł",h24:"—",note:"Strefa A – progresywna"}},
+  {n:"Parking ul. Grunwaldzka",         a:"ul. Grunwaldzka (centrum)",          lat:51.10650,lng:17.05100,r:3.5,open:1,t:"open",  zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"—",note:"Strefa B"}},
+  {n:"Parking ul. Traugutta",           a:"ul. Romualda Traugutta",             lat:51.10650,lng:17.05600,r:3.5,open:1,t:"open",  zone:"spp",free:0,price:{h1:"3 zł",h24:"—",note:"SPP – Nadodrze"}},
+  {n:"Parking ul. Dobrzyńska",          a:"ul. Dobrzyńska",                     lat:51.09650,lng:17.01850,r:3.5,open:1,t:"open",  zone:"spp",free:0,price:{h1:"3 zł",h24:"—",note:"SPP"}},
+  {n:"Parking ul. Śląska",              a:"ul. Śląska",                         lat:51.12500,lng:17.04200,r:3.6,open:1,t:"open",  zone:"spp",free:0,price:{h1:"3 zł",h24:"—",note:"SPP"}},
+  {n:"Parking ul. Bolesława Prusa",     a:"ul. Bolesława Prusa",                lat:51.10100,lng:17.04500,r:3.6,open:1,t:"open",  zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"—",note:"Strefa B"}},
+  {n:"Parking ul. Na Niskich Łąkach",   a:"ul. Na Niskich Łąkach",              lat:51.09800,lng:17.05200,r:3.7,open:1,t:"open",  zone:"spp",free:0,price:{h1:"3 zł",h24:"—",note:"SPP – południe"}},
+  {n:"Parking ul. Strzegomska",         a:"ul. Strzegomska",                    lat:51.09800,lng:16.99200,r:3.5,open:1,t:"open",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Bezpłatne – poza strefą"}},
+  {n:"Parking ul. Zemska",              a:"ul. Zemska",                         lat:51.09600,lng:16.99800,r:3.5,open:1,t:"open",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Bezpłatne"}},
+  {n:"Parking Promenada Południe",      a:"al. gen. Hallera",                   lat:51.08500,lng:17.05500,r:3.8,open:1,t:"open",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Bezpłatne – park i rekreacja"}},
+  {n:"Parking Słowackiego/Krasińskiego",a:"al. Słowackiego / Krasińskiego",     lat:51.11020,lng:17.04800,r:3.6,open:1,t:"open",  zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"—",note:"Strefa B"}},
+
+  // GALERIE I ATRAKCJE
+  {n:"Parking Wroclavia",               a:"ul. Sucha 1",                        lat:51.09643,lng:17.03484,r:4.0,open:0,t:"mall",  zone:null,free:0,price:{h1:"—",h24:"—",note:"Bezpłatny przy walidacji zakupów"}},
+  {n:"Parking Galeria Dominikańska",    a:"pl. Dominikański 3",                 lat:51.10847,lng:17.03916,r:3.6,open:0,t:"mall",  zone:null,free:0,price:{h1:"4 zł",h24:"—",note:"1h gratis przy zakupach 50 zł+"}},
+  {n:"Parking Renoma",                  a:"ul. Świdnicka 40",                   lat:51.10343,lng:17.03294,r:4.2,open:0,t:"mall",  zone:null,free:0,price:{h1:"5 zł",h24:"—",note:"1h gratis przy zakupach"}},
+  {n:"Parking Arkady Wrocławskie",      a:"ul. Powstańców Śląskich 2–4",        lat:51.09350,lng:16.98450,r:3.8,open:0,t:"mall",  zone:null,free:0,price:{h1:"—",h24:"—",note:"Bezpłatny przy zakupach"}},
+  {n:"Parking Magnolia Park",           a:"ul. Legnicka 58",                    lat:51.11380,lng:16.99420,r:4.1,open:0,t:"mall",  zone:null,free:0,price:{h1:"—",h24:"—",note:"Bezpłatny przy zakupach"}},
+  {n:"Parking Pasaż Grunwaldzki",       a:"pl. Grunwaldzki 22",                 lat:51.10840,lng:17.05840,r:4.0,open:0,t:"mall",  zone:null,free:0,price:{h1:"—",h24:"—",note:"Bezpłatny przy zakupach"}},
+  {n:"Parking Sky Tower",               a:"ul. Gwiaździsta 66",                 lat:51.09180,lng:17.00520,r:3.9,open:0,t:"mall",  zone:null,free:0,price:{h1:"4 zł",h24:"—",note:"Częściowo darmowy przy zakupach"}},
+  {n:"Parking Galeria Joy",             a:"ul. Małachowskiego",                 lat:51.09200,lng:17.04100,r:3.7,open:0,t:"mall",  zone:null,free:0,price:{h1:"—",h24:"—",note:"Bezpłatny przy zakupach"}},
+  {n:"Parking Ferio Gaj",               a:"ul. Świeradowska 51",                lat:51.07200,lng:17.05100,r:3.8,open:0,t:"mall",  zone:null,free:0,price:{h1:"—",h24:"—",note:"Bezpłatny przy zakupach"}},
+  {n:"Parking ZOO Wrocław",             a:"ul. Wróblewskiego 9",                lat:51.10650,lng:17.07150,r:3.9,open:1,t:"mall",  zone:null,free:0,price:{h1:"5 zł",h24:"—",note:"Płatny przy zwiedzaniu"}},
+  {n:"Parking ZOO/Hala Stulecia podz.", a:"ul. Wystawowa 1 (podz.)",            lat:51.10580,lng:17.07869,r:3.7,open:1,t:"mall",  zone:null,free:0,price:{h1:"9,50 zł",h24:"—",note:"Drogi – lepiej dalej"}},
+  {n:"Parking Hala Stulecia naziemny",  a:"ul. Wystawowa 1 (naz.)",             lat:51.10752,lng:17.07714,r:3.7,open:1,t:"mall",  zone:null,free:0,price:{h1:"5 zł",h24:"—",note:"Przy imprezach drożej"}},
+  {n:"Parking Panorama Racławicka",     a:"al. Słowackiego 5",                  lat:51.10855,lng:17.04582,r:4.0,open:1,t:"mall",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Darmowy"}},
+  {n:"Parking Dworzec Świebodzki",      a:"pl. Orląt Lwowskich",                lat:51.10300,lng:17.01800,r:3.5,open:1,t:"open",  zone:"sspp_b",free:0,price:{h1:"5 zł",h24:"—",note:"Przy dawnym dworcu"}},
+
+  // DWORZEC PKP
+  {n:"Parking Dworzec PKP (podz.)",     a:"ul. Piłsudskiego 105",               lat:51.09820,lng:17.03620,r:3.2,open:1,t:"garage",zone:"spp",free:0,price:{h1:"5 zł",h24:"—",note:"Tylko płatność QR – problematyczny"}},
+  {n:"Parking Dworzec PKP (zewn.)",     a:"ul. Powstańców Śląskich",            lat:51.09887,lng:17.03838,r:3.4,open:1,t:"open",  zone:"spp",free:0,price:{h1:"5 zł",h24:"—",note:"Często przepełniony"}},
+  {n:"Parking Kiss & Ride Wroclavia",   a:"ul. Joannitów 13",                   lat:51.09674,lng:17.03687,r:4.3,open:1,t:"open",  zone:null,free:0,price:{h1:"—",h24:"—",note:"10 min gratis – tylko krótki postój"}},
+  {n:"Parking Dąbrowskiego (darmowy)", a:"ul. Dąbrowskiego",                   lat:51.09924,lng:17.04036,r:4.7,open:1,t:"open",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Darmowy – blisko PKP i centrum"}},
+
+  // PRYWATNE / LOTNISKO
+  {n:"Parking Dudzis (strzeżony)",      a:"Wrocław – centrum",                  lat:51.10500,lng:17.01600,r:4.2,open:1,t:"private",zone:null,free:0,price:{h1:"6 zł",h24:"50 zł",note:"Strzeżony 24/7, ochrona"}},
+  {n:"Parking ul. Ślężna 110",          a:"ul. Ślężna 110",                     lat:51.08800,lng:17.01400,r:3.9,open:1,t:"private",zone:null,free:0,price:{h1:"4 zł",h24:"35 zł",note:"Strzeżony, monitoring"}},
+  {n:"Parking ul. Kamienna 7",          a:"ul. Kamienna 7",                     lat:51.10200,lng:17.05800,r:3.8,open:1,t:"private",zone:null,free:0,price:{h1:"5 zł",h24:"40 zł",note:"Prywatny strzeżony"}},
+  {n:"Parking Lotnisko Long Term D",    a:"ul. Graniczna 190",                  lat:51.11339,lng:16.86779,r:3.6,open:1,t:"open",  zone:null,free:0,price:{h1:"—",h24:"27 zł",note:"Rezerwacja online – od 109 zł/4 dni"}},
+  {n:"Parking Cargo Lotnisko",          a:"ul. Zarembowicza 36a",               lat:51.10812,lng:16.88878,r:4.9,open:1,t:"private",zone:null,free:0,price:{h1:"—",h24:"~35 zł",note:"Transfer do lotniska gratis"}},
+
+  // PARK & RIDE
+  {n:"P+R Stadion Wrocław",             a:"al. Śląska",                         lat:51.13657,lng:16.94184,r:4.1,open:1,t:"pr",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Bezpłatny z biletem MPK"}},
+  {n:"P+R Grabiszyńska / Oporów",       a:"pętla Wzgórze Oporowskie",           lat:51.08387,lng:16.97169,r:4.6,open:1,t:"pr",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Bezpłatny – dużo miejsca"}},
+  {n:"P+R Ślężna (Wzgórze Andersa)",    a:"ul. Wzgórze Andersa",                lat:51.09001,lng:17.02922,r:4.2,open:1,t:"pr",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Z biletem MPK – bezpłatny"}},
+  {n:"P+R Rogowska",                    a:"ul. Komorowska",                     lat:51.11029,lng:16.95431,r:4.7,open:1,t:"pr",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Bezpłatny, duży węzeł"}},
+  {n:"P+R Kromera",                     a:"ul. Kromera",                        lat:51.10200,lng:16.97800,r:3.9,open:1,t:"pr",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Z Urban Card – bezpłatny"}},
+  {n:"P+R Bierutowska (Psie Pole)",     a:"ul. Bierutowska",                    lat:51.14965,lng:17.11914,r:3.6,open:1,t:"pr",  zone:null,free:0,price:{h1:"2 zł",h24:"—",note:"Przy stacji SKM"}},
+  {n:"P+R Kamieńskiego",                a:"pętla autobusowa",                   lat:51.07380,lng:16.99210,r:3.7,open:1,t:"pr",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Bezpłatny z biletem MPK"}},
+  {n:"P+R Bardzka / Świeradowska",      a:"ul. Bardzka",                        lat:51.07100,lng:17.05200,r:3.8,open:1,t:"pr",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Przy pętli tramwajowej"}},
+  {n:"P+R Kosmonautów / Leśnica",       a:"pętla Leśnica",                      lat:51.11500,lng:16.87800,r:4.0,open:1,t:"pr",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Zachód Wrocławia"}},
+  {n:"P+R Opolska (Głubczycka)",        a:"ul. Opolska 32",                     lat:51.07958,lng:17.08159,r:4.8,open:1,t:"pr",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Najlepiej oceniany P+R"}},
+  {n:"P+R Lotnicza (Wrocław Kuźniki)",  a:"stacja kol. Wrocław Kuźniki",        lat:51.14238,lng:16.90012,r:4.0,open:1,t:"pr",  zone:null,free:0,price:{h1:"2 zł",h24:"—",note:"Wymaga Urban Card lub biletu"}},
+  {n:"P+R Buforowa (Kajdasiewicza)",    a:"ul. Kajdasiewicza",                  lat:51.06567,lng:16.98675,r:3.9,open:1,t:"pr",  zone:null,free:0,price:{h1:"2 zł",h24:"—",note:"Wymaga Urban Card"}},
+  {n:"P+R Cmentarz Grabiszyński",       a:"ul. Grabiszyńska",                   lat:51.08800,lng:16.97500,r:3.8,open:1,t:"pr",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Bezpłatny"}},
+  {n:"P+R Klecina (Jutrzenki)",         a:"ul. Jutrzenki",                      lat:51.06400,lng:16.99000,r:3.9,open:1,t:"pr",  zone:null,free:0,price:{h1:"2 zł",h24:"—",note:"Wymaga Urban Card"}},
+  {n:"P+R Pętla Rogowska / Żerniki",   a:"ul. Żernicka / Rumiankowa",          lat:51.11989,lng:16.95131,r:4.2,open:1,t:"pr",  zone:null,free:1,price:{h1:"0 zł",h24:"0 zł",note:"Bezpłatny"}},
+  {n:"P+R Majchra",                     a:"ul. Alojzego Majchra",               lat:51.14386,lng:16.87271,r:3.8,open:1,t:"pr",  zone:null,free:0,price:{h1:"2 zł",h24:"—",note:"Wymaga Urban Card"}},
+];
+
+// Kolory, ikony, etykiety
+const TC = {garage:"#47c8ff",mall:"#b47cff",open:"#e8ff47",pr:"#ff8c47",private:"#47ffb0",custom:"#ff4f7b"};
+const TI = {garage:"🏢",mall:"🅿",open:"P",pr:"🚌",private:"🔒",custom:"⭐"};
+const TL = {garage:"🏢 Garaż/podziemny",mall:"🛍 Galeria/atrakcja",open:"🅿 Parking naziemny",pr:"🚌 Park & Ride",private:"🔒 Strzeżony prywatny",custom:"⭐ Mój parking"};
+const ZL = {sspp_a:"🔴 ŚSPP – Obszar A",sspp_b:"🟠 ŚSPP – Obszar B",spp:"🔵 SPP",free:"💚 Bezpłatna"};
+const ZH = { // godziny płatności
+  sspp_a:"7 zł/h progresywnie • pn–nd 9–20",
+  sspp_b:"5 zł/h progresywnie • pn–nd 9–20",
+  spp:"3 zł/h progresywnie • pn–pt 9–18",
+  free:"Bezpłatnie zawsze"
+};
+
+// MAPA
+const map = L.map('map').setView([51.103, 17.025], 13);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  attribution:'© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',maxZoom:19
+}).addTo(map);
+
+// RYSUJ STREFY – kolejność: SPP (zewn.) → B → A (A na wierzchu)
+function drawZone(coords, color, fillOp, label, hours) {
+  const poly = L.polygon(coords, {
+    color, fillColor:color, fillOpacity:fillOp,
+    weight:2, opacity:.7, dashArray:'6,5'
+  }).addTo(map);
+  poly.bindTooltip(
+    `<b>${label}</b><br><span style="color:#aaa;font-size:.68rem">${hours}</span><br><span style="color:#ff8fa8;font-size:.65rem">⚠️ Mandat 360 zł – płać appką jeśli brak parkometru!</span>`,
+    {sticky:true, opacity:.97}
+  );
+  return poly;
+}
+
+drawZone(ZONE_SPP_COORDS, '#2288ff', 0.06, '🔵 Strefa Płatnego Parkowania (SPP)', 'pn–pt 9:00–18:00 | 3 zł/h | weekendy BEZPŁATNE');
+drawZone(ZONE_B_COORDS,   '#ff8800', 0.10, '🟠 Śródmiejska SPP – Obszar B',       'pn–nd 9:00–20:00 | 5 zł/h progresywnie');
+drawZone(ZONE_A_COORDS,   '#ff3c3c', 0.15, '🔴 Śródmiejska SPP – Obszar A',       'pn–nd 9:00–20:00 | 7 zł/h progresywnie');
+
+// IKONY PARKINGÓW
+function mkIcon(p, active) {
+  const col = TC[p.t]||"#e8ff47", ico = TI[p.t]||"P", s = active ? 44 : 34;
+  return L.divIcon({
+    className:'', iconSize:[s,s], iconAnchor:[s/2,s], popupAnchor:[0,-s+4],
+    html:`<div style="width:${s}px;height:${s}px;background:${col};border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:2px solid rgba(0,0,0,.28);box-shadow:0 4px 14px ${col}99;display:flex;align-items:center;justify-content:center;"><span style="transform:rotate(45deg);font-size:${active?16:11}px;line-height:1">${ico}</span></div>`
+  });
+}
+
+function mkZoneTag(zone) {
+  if (!zone) return '';
+  const colors = {sspp_a:'rgba(255,60,60,.12)|#ff7070|rgba(255,60,60,.3)', sspp_b:'rgba(255,136,0,.1)|#ffaa44|rgba(255,136,0,.3)', spp:'rgba(34,136,255,.1)|#55aaff|rgba(34,136,255,.3)', free:'rgba(71,255,176,.1)|#47ffb0|rgba(71,255,176,.3)'};
+  const [bg,fc,bc] = (colors[zone]||'').split('|');
+  const label = {sspp_a:'Strefa A',sspp_b:'Strefa B',spp:'SPP',free:'Bezpłatna'}[zone]||zone;
+  return `<span style="background:${bg};color:${fc};border:1px solid ${bc};border-radius:20px;font-size:.62rem;padding:1px 7px">${label}</span>`;
+}
+
+function mkPopup(p, i, isCustom) {
+  const zoneWarn = (p.zone==='sspp_a'||p.zone==='sspp_b') ?
+    `<div class="pu-warn"><b>⚠️ Strefa płatna 7 dni w tygodniu!</b><br>Płatność: parkomat, SkyCash, AnyPark lub moBILET. Brak parkometru NIE zwalnia z opłaty. Mandat: <b>360 zł</b>.</div>` :
+    p.zone==='spp' ? `<div class="pu-warn" style="background:rgba(34,136,255,.07);border-color:rgba(34,136,255,.25);color:#88bbff"><b>ℹ️ Strefa SPP</b> – płatna pn–pt 9–18.<br>Weekendy i święta: <b style="color:#47ffb0">bezpłatnie!</b></div>` : '';
+  const hours = p.zone ? `<div class="row"><span>Godziny płatności</span><span>${ZH[p.zone]||'—'}</span></div>` : '';
+  const priceRows = [];
+  if (p.price?.h1 && p.price.h1!=='—') priceRows.push(`<div class="row"><span>Za godzinę</span><span>${p.price.h1}</span></div>`);
+  if (p.price?.h24 && p.price.h24!=='—') priceRows.push(`<div class="row"><span>Za dobę</span><span>${p.price.h24}</span></div>`);
+  const priceBlock = (priceRows.length||hours||p.price?.note) ? `<div class="pu-price">${hours}${priceRows.join('')}${p.price?.note?`<div class="note">ℹ️ ${p.price.note}</div>`:''}</div>` : '';
+  const delBtn = isCustom ? `<button onclick="delCustom(${i})" style="margin-top:7px;width:100%;background:rgba(255,79,123,.1);border:1px solid rgba(255,79,123,.25);color:#ff4f7b;border-radius:7px;padding:6px;font-size:.71rem;cursor:pointer;font-family:inherit">🗑 Usuń ten parking</button>` : '';
+  const parkingId = p._docId || ('builtin_' + i);
+  return `<div class="pu">
+    <div class="pu-cat">${TL[p.t]||''}</div>
+    <div class="pu-name">${p.n}</div>
+    <div class="pu-addr">📍 ${p.a}</div>
+    <div class="pu-tags">
+      ${p.r?`<span class="tag ty" id="avgRating_${parkingId}">★ ${p.r}</span>`:`<span class="tag ty" id="avgRating_${parkingId}">★ —</span>`}
+      <span class="tag tb">${p.open?'🕐 Całą dobę':'⏰ Wybrane godz.'}</span>
+      ${p.free?'<span class="tag tg">💚 Bezpłatny</span>':''}
+      ${mkZoneTag(p.zone)}
+    </div>
+    ${zoneWarn}${priceBlock}
+    <button class="pu-nav-btn" onclick="startNavigation(${p.lat}, ${p.lng}, '${p.n.replace(/'/g,"\\'")}')">🧭 Nawiguj do celu</button>
+    <a class="pu-btn" href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=driving" target="_blank" style="background:rgba(71,200,255,.12);color:var(--a2);border:1px solid rgba(71,200,255,.3);margin-bottom:6px">🗺 Otwórz w Google Maps →</a>
+    <a class="pu-btn" href="https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}" target="_blank">Otwórz w Google Maps →</a>
+    ${delBtn}
+  </div>
+  <div class="reviews-section" id="reviews_${parkingId}">
+    <div class="reviews-title"><span>💬 Opinie</span><span id="reviewCount_${parkingId}" style="font-size:.65rem"></span></div>
+    <div class="review-list" id="reviewList_${parkingId}"><div class="no-reviews">⏳ Ładowanie opinii...</div></div>
+    <div id="reviewForm_${parkingId}" style="margin-top:10px">
+      <div class="star-row" id="starRow_${parkingId}">
+        ${[1,2,3,4,5].map(n=>`<span class="star" data-val="${n}" onclick="setReviewStar('${parkingId}',${n})">★</span>`).join('')}
+      </div>
+      <textarea class="review-input" id="reviewText_${parkingId}" placeholder="Napisz opinię (opcjonalnie)..." rows="2"></textarea>
+      <button class="review-submit" onclick="submitReview('${parkingId}', ${p.lat}, ${p.lng}, '${p.n.replace(/'/g,"\\'")}')">Dodaj opinię</button>
+    </div>
+  </div>`;
+}
+
+// WSZYSTKIE PARKINGI
+let ALL = [...BUILT_IN];
+
+let markers = [];
+function buildMarkers() {
+  markers.forEach(m => { try { map.removeLayer(m); } catch(e){} });
+  markers = ALL.map((p, i) => {
+    const isCustom = i >= BUILT_IN.length;
+    const m = L.marker([p.lat, p.lng], {icon: mkIcon(p, false)}).addTo(map);
+    m.bindPopup(mkPopup(p, i, isCustom), {maxWidth:340});
+    m.on('click', () => activateCard(i));
+    m.on('popupopen', () => {
+      const parkingId = p._docId || ('builtin_' + i);
+      loadReviews(parkingId);
+    });
+    return m;
+  });
+}
+
+let activeIdx = -1;
+function activate(i) {
+  if (activeIdx>=0 && markers[activeIdx]) markers[activeIdx].setIcon(mkIcon(ALL[activeIdx],false));
+  activeIdx=i;
+  markers[i].setIcon(mkIcon(ALL[i],true));
+  map.flyTo([ALL[i].lat, ALL[i].lng], 17, {duration:.7});
+  markers[i].openPopup();
+  activateCard(i);
+}
+function activateCard(i) {
+  document.querySelectorAll('.card').forEach(c=>c.classList.remove('active'));
+  const card=document.querySelector(`.card[data-i="${i}"]`);
+  if(card){card.classList.add('active');card.scrollIntoView({behavior:'smooth',block:'nearest'});}
+}
+map.on('popupclose',()=>{
+  if(activeIdx>=0&&markers[activeIdx])markers[activeIdx].setIcon(mkIcon(ALL[activeIdx],false));
+  activeIdx=-1;
+  document.querySelectorAll('.card').forEach(c=>c.classList.remove('active'));
+});
+
+
+// RENDER LIST
+const GRP_ORDER=['custom','garage','mall','open','private','pr'];
+const GRP_NAMES={custom:'⭐ Moje parkingi',garage:'🏢 Garaże i wielopoziomowe',mall:'🛍 Galerie i atrakcje',open:'🅿 Parkingi naziemne',private:'🔒 Prywatne / lotnisko',pr:'🚌 Park & Ride (P+R)'};
+let activeF='all';
+
+document.querySelectorAll('.fbtn').forEach(btn=>{
+  btn.onclick=()=>{document.querySelectorAll('.fbtn').forEach(b=>b.classList.remove('on'));btn.classList.add('on');activeF=btn.dataset.f;render(document.getElementById('search').value.toLowerCase());};
+});
+document.getElementById('search').oninput=e=>render(e.target.value.toLowerCase());
+
+function matchF(p){
+  if(activeF==='all')return true;
+  if(['garage','mall','pr','open','private','custom'].includes(activeF))return p.t===activeF;
+  if(activeF==='free')return!!p.free;
+  if(activeF==='sspp_a')return p.zone==='sspp_a';
+  if(activeF==='sspp_b')return p.zone==='sspp_b';
+  if(activeF==='spp')return p.zone==='spp';
+  return true;
+}
+
+function render(search){
+  const el=document.getElementById('plist'); el.innerHTML=''; let n=0;
+  ALL.forEach((p,i)=>{
+    const vis=matchF(p)&&(!search||p.n.toLowerCase().includes(search)||p.a.toLowerCase().includes(search));
+    if(vis&&markers[i])markers[i].addTo(map); else if(markers[i])map.removeLayer(markers[i]);
+  });
+  GRP_ORDER.forEach(grp=>{
+    const items=ALL.map((p,i)=>({p,i})).filter(({p})=>p.t===grp&&matchF(p)&&(!search||p.n.toLowerCase().includes(search)||p.a.toLowerCase().includes(search)));
+    if(!items.length)return;
+    const gl=document.createElement('div'); gl.className='group-label';
+    gl.textContent=`${GRP_NAMES[grp]} (${items.length})`; el.appendChild(gl);
+    items.forEach(({p,i})=>{
+      n++;
+      const isCustom=i>=BUILT_IN.length;
+      const pinfo=p.price?.h1&&p.price.h1!=='—'?p.price.h1+'/h':p.free?'Darmowy':p.price?.h24&&p.price.h24!=='—'?p.price.h24+'/dobę':'';
+      const ztag = p.zone ? {sspp_a:'🔴 Str.A',sspp_b:'🟠 Str.B',spp:'🔵 SPP',free:'💚'}[p.zone]||'' : '';
+      const c=document.createElement('div'); c.className=`card t-${p.t}`; c.dataset.i=i;
+      c.innerHTML=`${isCustom?`<button class="del-btn" onclick="event.stopPropagation();delCustom(${i})">✕</button>`:''}
+        <div class="cn">${p.n}</div><div class="ca">📍 ${p.a}</div>
+        <div class="cm">
+          ${p.r?`<span class="tag ty">★ ${p.r}</span>`:''}
+          <span class="tag tb">${p.open?'24/7':'Wybrane godz.'}</span>
+          ${p.free?'<span class="tag tg">💚</span>':''}
+          ${ztag?`<span class="tag">${ztag}</span>`:''}
+          ${pinfo?`<span class="ptag">💳 ${pinfo}</span>`:''}
+        </div>`;
+      c.onclick=()=>activate(i); el.appendChild(c);
+    });
+  });
+  document.getElementById('cnt').textContent=n;
+  document.getElementById('hv').textContent=n;
+}
+
+// DODAJ WŁASNY
+let pickMode=false;
+const overlay=document.getElementById('overlay');
+const pickHint=document.getElementById('pickHint');
+
+// ══════════════════════════════════════════════════════
+// FIREBASE AUTH SYSTEM
+// ══════════════════════════════════════════════════════
+let currentUser = null;
+
+// fbReady() defined above – Firebase initializes asynchronously via ES module
+
+fbReady().then(() => {
+  const { onAuthStateChanged } = window._fbFns;
+  onAuthStateChanged(window._fbAuth, user => {
+    currentUser = user;
+    updateHeaderUI();
+    if (user) loadUserParkings();
+    else {
+      // Usuń parkingi użytkownika z mapy gdy wylogowany
+      ALL = [...BUILT_IN];
+      buildMarkers();
+      render(document.getElementById('search').value.toLowerCase());
+      document.getElementById('hc').textContent = ALL.length;
+    }
+  });
+});
+
+function updateHeaderUI() {
+  const loggedIn = !!currentUser;
+  document.getElementById('guestBtns').style.display = loggedIn ? 'none' : 'flex';
+  document.getElementById('userMenuWrap').style.display = loggedIn ? 'block' : 'none';
+  if (loggedIn) {
+    const name = currentUser.displayName || currentUser.email.split('@')[0];
+    const initials = name.charAt(0).toUpperCase();
+    document.getElementById('userAvatar').textContent = initials;
+    document.getElementById('userDisplayName').textContent = name;
+    document.getElementById('udName').textContent = name;
+    document.getElementById('udEmail').textContent = currentUser.email;
+    // Check admin status
+    checkAdminStatus(currentUser.uid).then(admin => {
+      isAdmin = admin;
+      const adminBtn = document.getElementById('adminBtn');
+      if (adminBtn) adminBtn.style.display = admin ? 'block' : 'none';
+    });
+  } else {
+    isAdmin = false;
+    const adminBtn = document.getElementById('adminBtn');
+    if (adminBtn) adminBtn.style.display = 'none';
+  }
+}
+
+function openAuth(tab) {
+  document.getElementById('authOverlay').classList.remove('hidden');
+  switchTab(tab || 'login');
+  ['loginErr','regErr','regOk'].forEach(id => {
+    const el = document.getElementById(id);
+    el.classList.remove('show'); el.textContent = '';
+  });
+}
+
+function closeAuth() {
+  document.getElementById('authOverlay').classList.add('hidden');
+}
+
+function switchTab(tab) {
+  document.getElementById('formLogin').style.display = tab === 'login' ? 'block' : 'none';
+  document.getElementById('formRegister').style.display = tab === 'register' ? 'block' : 'none';
+  document.getElementById('tabLogin').classList.toggle('active', tab === 'login');
+  document.getElementById('tabRegister').classList.toggle('active', tab === 'register');
+}
+
+// Czeka aż Firebase będzie gotowy (moduł ES ładuje się asynchronicznie)
+function fbReady() {
+  return new Promise(resolve => {
+    if (window._fbAuth && window._fbFns) { resolve(); return; }
+    const t = setInterval(() => {
+      if (window._fbAuth && window._fbFns) { clearInterval(t); resolve(); }
+    }, 50);
+  });
+}
+
+async function doLogin() {
+  const email = document.getElementById('l-email').value.trim();
+  const pass  = document.getElementById('l-pass').value;
+  const errEl = document.getElementById('loginErr');
+  errEl.classList.remove('show');
+  if (!email || !pass) { errEl.textContent = 'Wypełnij wszystkie pola.'; errEl.classList.add('show'); return; }
+  const btn = document.querySelector('#formLogin .auth-btn');
+  btn.textContent = 'Logowanie...'; btn.disabled = true;
+  try {
+    await fbReady();
+    const { signInWithEmailAndPassword } = window._fbFns;
+    await signInWithEmailAndPassword(window._fbAuth, email, pass);
+    closeAuth();
+  } catch(e) {
+    const msgs = { 'auth/invalid-credential':'Nieprawidłowy e-mail lub hasło.', 'auth/user-not-found':'Nie znaleziono konta z tym e-mailem.', 'auth/wrong-password':'Błędne hasło.', 'auth/too-many-requests':'Za dużo prób. Spróbuj za chwilę.' };
+    errEl.textContent = msgs[e.code] || 'Błąd logowania: ' + e.message;
+    errEl.classList.add('show');
+  } finally { btn.textContent = 'Zaloguj się →'; btn.disabled = false; }
+}
+
+async function doRegister() {
+  const name  = document.getElementById('r-name').value.trim();
+  const email = document.getElementById('r-email').value.trim();
+  const pass  = document.getElementById('r-pass').value;
+  const pass2 = document.getElementById('r-pass2').value;
+  const errEl = document.getElementById('regErr');
+  const okEl  = document.getElementById('regOk');
+  errEl.classList.remove('show'); okEl.classList.remove('show');
+  if (!name||!email||!pass||!pass2) { errEl.textContent='Wypełnij wszystkie pola.'; errEl.classList.add('show'); return; }
+  if (pass.length < 6) { errEl.textContent='Hasło musi mieć co najmniej 6 znaków.'; errEl.classList.add('show'); return; }
+  if (pass !== pass2) { errEl.textContent='Hasła nie są zgodne.'; errEl.classList.add('show'); return; }
+  const btn = document.querySelector('#formRegister .auth-btn');
+  btn.textContent = 'Rejestracja...'; btn.disabled = true;
+  try {
+    await fbReady();
+    const { createUserWithEmailAndPassword, updateProfile } = window._fbFns;
+    const cred = await createUserWithEmailAndPassword(window._fbAuth, email, pass);
+    await updateProfile(cred.user, { displayName: name });
+    currentUser = cred.user;
+    // Save profile for admin panel
+    try {
+      const { doc, setDoc } = window._fbFns;
+      await setDoc(doc(window._fbDb, 'userProfiles', cred.user.uid), {
+        displayName: name, email, createdAt: Date.now(), uid: cred.user.uid
+      });
+    } catch(e2) { console.warn('Profil nie zapisany:', e2); }
+    updateHeaderUI();
+    closeAuth();
+  } catch(e) {
+    const msgs = { 'auth/email-already-in-use':'Ten e-mail jest już zarejestrowany.', 'auth/invalid-email':'Nieprawidłowy adres e-mail.', 'auth/weak-password':'Hasło jest za słabe.' };
+    errEl.textContent = msgs[e.code] || 'Błąd rejestracji: ' + e.message;
+    errEl.classList.add('show');
+  } finally { btn.textContent = 'Zarejestruj się →'; btn.disabled = false; }
+}
+
+async function logout() {
+  await fbReady();
+  const { signOut } = window._fbFns;
+  await signOut(window._fbAuth);
+  toggleUserMenu(true);
+}
+
+function toggleUserMenu(forceClose) {
+  const dd = document.getElementById('userDropdown');
+  if (forceClose) { dd.classList.remove('open'); return; }
+  dd.classList.toggle('open');
+}
+
+document.addEventListener('click', e => {
+  if (!document.getElementById('userMenuWrap').contains(e.target))
+    document.getElementById('userDropdown').classList.remove('open');
+});
+
+document.getElementById('authOverlay').addEventListener('click', e => {
+  if (e.target === document.getElementById('authOverlay')) closeAuth();
+});
+
+document.getElementById('l-pass').addEventListener('keydown', e => { if(e.key==='Enter') doLogin(); });
+document.getElementById('r-pass2').addEventListener('keydown', e => { if(e.key==='Enter') doRegister(); });
+
+// TOAST
+let toastTimer;
+function showAuthToast() {
+  const t = document.getElementById('authToast');
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(hideToast, 5000);
+}
+function hideToast() { document.getElementById('authToast').classList.remove('show'); }
+
+// ══════════════════════════════════════════════════════
+// FIRESTORE – WŁASNE PARKINGI
+// ══════════════════════════════════════════════════════
+async function loadUserParkings() {
+  if (!currentUser) return;
+  try {
+    const { collection, getDocs, query, where } = window._fbFns;
+    const q = query(collection(window._fbDb, 'parkings'), where('uid', '==', currentUser.uid));
+    const snap = await getDocs(q);
+    const loaded = [];
+    snap.forEach(d => loaded.push({ ...d.data(), _docId: d.id, t: 'custom' }));
+    ALL = [...BUILT_IN, ...loaded];
+    buildMarkers();
+    render(document.getElementById('search').value.toLowerCase());
+    document.getElementById('hc').textContent = ALL.length;
+  } catch(e) { console.error('Błąd ładowania parkingów:', e); }
+}
+
+async function saveToFirestore(parkingData) {
+  const { collection, addDoc } = window._fbFns;
+  const docRef = await addDoc(collection(window._fbDb, 'parkings'), {
+    ...parkingData, uid: currentUser.uid, createdAt: Date.now()
+  });
+  return docRef.id;
+}
+
+window.delCustom = async function(i) {
+  const p = ALL[i];
+  if (!p._docId) return;
+  if (!confirm(`Usunąć parking "${p.n}"?`)) return;
+  try {
+    const { deleteDoc, doc } = window._fbFns;
+    await deleteDoc(doc(window._fbDb, 'parkings', p._docId));
+    map.closePopup();
+    await loadUserParkings();
+  } catch(e) { alert('Błąd usuwania: ' + e.message); }
+};
+
+// ══════════════════════════════════════════════════════
+// DODAJ WŁASNY
+// ══════════════════════════════════════════════════════
+document.getElementById('openAddBtn').onclick=()=>{
+  if (!currentUser) { showAuthToast(); return; }
+  overlay.classList.remove('hidden');
+};
+document.getElementById('cancelBtn').onclick=()=>{overlay.classList.add('hidden');clearF();};
+overlay.addEventListener('click',e=>{if(e.target===overlay){overlay.classList.add('hidden');clearF();}});
+
+document.getElementById('pickMapBtn').onclick=()=>{
+  overlay.classList.add('hidden'); pickMode=true;
+  pickHint.style.display='block'; map.getContainer().style.cursor='crosshair';
+};
+map.on('click',e=>{
+  if(pickMode){
+    document.getElementById('f-lat').value=e.latlng.lat.toFixed(6);
+    document.getElementById('f-lng').value=e.latlng.lng.toFixed(6);
+    pickMode=false; pickHint.style.display='none'; pickHint.style.background='';
+    map.getContainer().style.cursor=''; overlay.classList.remove('hidden');
+    return;
+  }
+  if(manualLocationMode){
+    manualLocationMode = false;
+    pickHint.style.display='none'; pickHint.style.background='';
+    map.getContainer().style.cursor='';
+    const { lat, lng } = e.latlng;
+    userLocation = [lat, lng];
+    if (userLocationMarker) map.removeLayer(userLocationMarker);
+    userLocationMarker = L.circleMarker([lat, lng], {
+      radius: 10, fillColor: '#47c8ff', color: '#fff', weight: 2, fillOpacity: 0.9
+    }).addTo(map).bindTooltip('📌 Twoja lokalizacja (ręczna)', {permanent: false});
+    if (pendingNavDest) {
+      const { lat: dLat, lng: dLng, name } = pendingNavDest;
+      pendingNavDest = null;
+      _buildRoute(lat, lng, dLat, dLng, name);
+    }
+  }
+});
+
+document.getElementById('saveBtn').onclick=async()=>{
+  const name=document.getElementById('f-name').value.trim();
+  const lat=parseFloat(document.getElementById('f-lat').value);
+  const lng=parseFloat(document.getElementById('f-lng').value);
+  if(!name){alert('Podaj nazwę parkingu!');return;}
+  if(isNaN(lat)||isNaN(lng)){alert('Wskaż lokalizację na mapie lub podaj współrzędne!');return;}
+  const zone=document.getElementById('f-zone').value||null;
+  const h1=document.getElementById('f-price').value.trim();
+  const note=document.getElementById('f-note').value.trim();
+  const r=parseFloat(document.getElementById('f-rating').value)||0;
+  const newP={n:name,a:document.getElementById('f-addr').value.trim()||'Wrocław',lat,lng,r:r||null,open:parseInt(document.getElementById('f-open').value),t:'custom',zone:zone||null,free:zone==='free'?1:0,price:{h1:h1||'—',h24:'—',note:note||''}};
+  const btn=document.getElementById('saveBtn');
+  btn.textContent='Zapisywanie...'; btn.disabled=true;
+  try {
+    const docId = await saveToFirestore(newP);
+    newP._docId = docId;
+    ALL.push({...newP, t:'custom'});
+    buildMarkers(); render(document.getElementById('search').value.toLowerCase());
+    document.getElementById('hc').textContent=ALL.length;
+    overlay.classList.add('hidden'); clearF();
+    setTimeout(()=>activate(ALL.length-1),300);
+  } catch(e) { alert('Błąd zapisu: '+e.message); }
+  finally { btn.textContent='💾 Zapisz parking'; btn.disabled=false; }
+};
+
+function clearF(){['f-name','f-addr','f-price','f-note','f-lat','f-lng','f-rating'].forEach(id=>document.getElementById(id).value='');document.getElementById('f-type').value='open';document.getElementById('f-zone').value='';document.getElementById('f-open').value='1';}
+
+// ══════════════════════════════════════════════════════
+// NAWIGACJA – GEOLOKALIZACJA + LEAFLET ROUTING
+// ══════════════════════════════════════════════════════
+let userLocationMarker = null;
+let userLocation = null;
+let routingControl = null;
+let watchId = null;
+let isNavigating = false;
+let manualLocationMode = false;
+let pendingNavDest = null; // {lat, lng, name} – cel oczekujący na lokalizację
+
+// ── Geo toast ──
+let geoToastTimer;
+function showGeoToast(title, msg) {
+  document.getElementById('geoToastTitle').textContent = title;
+  document.getElementById('geoToastMsg').textContent = msg;
+  document.getElementById('geoToast').classList.add('show');
+  clearTimeout(geoToastTimer);
+  geoToastTimer = setTimeout(hideGeoToast, 12000);
+}
+function hideGeoToast() {
+  document.getElementById('geoToast').classList.remove('show');
+}
+
+// ── Tłumaczenie błędów geolokalizacji ──
+function geoErrMsg(err) {
+  if (!err) return 'Nieznany błąd.';
+  switch(err.code) {
+    case 1: return 'Dostęp do lokalizacji zablokowany. Kliknij ikonę 🔒 w pasku adresu przeglądarki i zezwól na lokalizację, lub ustaw ją ręcznie na mapie.';
+    case 2: return 'Nie można ustalić Twojej pozycji (brak sygnału GPS / WiFi). Spróbuj ponownie lub ustaw lokalizację ręcznie.';
+    case 3: return 'Przekroczono czas oczekiwania. Spróbuj ponownie lub ustaw lokalizację ręcznie.';
+    default: return err.message || 'Wystąpił błąd geolokalizacji.';
+  }
+}
+
+// ── Sprawdź czy geolokalizacja jest dostępna ──
+function isGeoAvailable() {
+  // file:// blokuje geo w Chrome/Edge; wymagany HTTPS lub localhost
+  if (!navigator.geolocation) return false;
+  const proto = location.protocol;
+  if (proto === 'file:') return false; // zawsze zablokowane
+  return true;
+}
+
+// ── Ręczne ustawianie lokalizacji na mapie ──
+function startManualLocation() {
+  hideGeoToast();
+  map.closePopup();
+  manualLocationMode = true;
+  const hint = document.getElementById('pickHint');
+  hint.innerHTML = '📌 Kliknij na mapie, aby ustawić <b>swoją lokalizację</b>';
+  hint.style.display = 'block';
+  hint.style.background = 'var(--a2)';
+  map.getContainer().style.cursor = 'crosshair';
+}
+
+// ── Obsługa kliknięcia – tryb ręczny jest obsługiwany w głównym map.on('click') powyżej ──
+
+
+// ── Główna funkcja – pobierz lokalizację ──
+function getMyLocation(onSuccess, onFail) {
+  if (!isGeoAvailable()) {
+    onFail && onFail({ code: 1, message: 'Strona musi być otwarta przez HTTPS lub localhost – geolokalizacja jest zablokowana przy otwieraniu pliku bezpośrednio (file://). Możesz ustawić lokalizację ręcznie na mapie.' });
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    pos => onSuccess(pos.coords.latitude, pos.coords.longitude),
+    err => onFail && onFail(err),
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+  );
+}
+
+function locateMe() {
+  const btn = document.getElementById('locateBtn');
+  btn.classList.add('locating');
+  btn.textContent = '⏳ Lokalizowanie...';
+
+  if (!isGeoAvailable()) {
+    btn.classList.remove('locating');
+    btn.textContent = '📍 Moja lokalizacja';
+    showGeoToast(
+      '🔒 Geolokalizacja niedostępna',
+      'Plik otwarty lokalnie (file://) lub HTTPS wymagany. Możesz ustawić lokalizację ręcznie klikając na mapę.'
+    );
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      btn.classList.remove('locating');
+      btn.textContent = '📍 Moja lokalizacja';
+      const { latitude: lat, longitude: lng } = pos.coords;
+      userLocation = [lat, lng];
+      if (userLocationMarker) map.removeLayer(userLocationMarker);
+      userLocationMarker = L.circleMarker([lat, lng], {
+        radius: 10, fillColor: '#47ffb0', color: '#fff', weight: 2, fillOpacity: 0.9
+      }).addTo(map).bindTooltip('📍 Twoja lokalizacja', {permanent: false});
+      map.flyTo([lat, lng], 15, {duration: 1});
+    },
+    err => {
+      btn.classList.remove('locating');
+      btn.textContent = '📍 Moja lokalizacja';
+      showGeoToast('📍 Błąd lokalizacji', geoErrMsg(err));
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+  );
+}
+
+function startNavigation(destLat, destLng, destName) {
+  pendingNavDest = { lat: destLat, lng: destLng, name: destName };
+
+  if (!isGeoAvailable()) {
+    showGeoToast(
+      '🔒 Geolokalizacja niedostępna',
+      'Plik otwarty lokalnie (file://) lub HTTPS wymagany. Ustaw lokalizację ręcznie, aby wyznaczyć trasę.'
+    );
+    return;
+  }
+
+  const btn = document.getElementById('locateBtn');
+  btn.classList.add('locating');
+  btn.textContent = '⏳ Lokalizowanie...';
+
+  navigator.geolocation.getCurrentPosition(
+    pos => {
+      btn.classList.remove('locating');
+      btn.textContent = '📍 Moja lokalizacja';
+      pendingNavDest = null;
+      const { latitude: lat, longitude: lng } = pos.coords;
+      userLocation = [lat, lng];
+      if (userLocationMarker) map.removeLayer(userLocationMarker);
+      userLocationMarker = L.circleMarker([lat, lng], {
+        radius: 10, fillColor: '#47ffb0', color: '#fff', weight: 2, fillOpacity: 0.9
+      }).addTo(map).bindTooltip('📍 Twoja lokalizacja', {permanent: false});
+      _buildRoute(lat, lng, destLat, destLng, destName);
+      if (watchId) navigator.geolocation.clearWatch(watchId);
+      watchId = navigator.geolocation.watchPosition(p2 => {
+        userLocation = [p2.coords.latitude, p2.coords.longitude];
+        if (userLocationMarker) userLocationMarker.setLatLng(userLocation);
+      }, null, { enableHighAccuracy: true });
+    },
+    err => {
+      btn.classList.remove('locating');
+      btn.textContent = '📍 Moja lokalizacja';
+      showGeoToast('📍 Błąd lokalizacji', geoErrMsg(err));
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+  );
+}
+
+// Dekoduj polyline (format Google/OSRM encoded)
+function haversineKm(lat1, lng1, lat2, lng2) {
+  const R = 6371, dLat=(lat2-lat1)*Math.PI/180, dLon=(lng2-lng1)*Math.PI/180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+function decodePolyline(str, precision) {
+  let i=0, lat=0, lng=0, coords=[], shift, result, byte, factor=Math.pow(10, precision||5);
+  while (i < str.length) {
+    byte=null; shift=0; result=0;
+    do { byte=str.charCodeAt(i++)-63; result|=(byte&0x1f)<<shift; shift+=5; } while(byte>=0x20);
+    lat += ((result&1)?~(result>>1):(result>>1));
+    shift=0; result=0;
+    do { byte=str.charCodeAt(i++)-63; result|=(byte&0x1f)<<shift; shift+=5; } while(byte>=0x20);
+    lng += ((result&1)?~(result>>1):(result>>1));
+    coords.push([lat/factor, lng/factor]);
+  }
+  return coords;
+}
+
+async function fetchRoute(url, options, ms) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try { return await fetch(url, { ...options, signal: ctrl.signal }); }
+  finally { clearTimeout(t); }
+}
+
+function drawRoutePolyline(coords) {
+  if (routingControl) { try { map.removeLayer(routingControl); } catch(e){} }
+  routingControl = L.polyline(coords, {
+    color: '#e8ff47', weight: 5, opacity: 0.9, lineJoin: 'round', lineCap: 'round'
+  }).addTo(map);
+  map.fitBounds(routingControl.getBounds(), { padding: [60, 60] });
+}
+
+async function _buildRoute(fromLat, fromLng, toLat, toLng, name) {
+  if (routingControl) { try { map.removeLayer(routingControl); } catch(e){} routingControl = null; }
+
+  isNavigating = true;
+  document.getElementById('navDestName').textContent = name;
+  document.getElementById('navDestMeta').textContent = '⏳ Wyznaczanie trasy...';
+  document.getElementById('navDist').textContent = '—';
+  document.getElementById('navTime').textContent = '—';
+  document.getElementById('navBar').classList.add('visible');
+
+  const gmUrl = `https://www.google.com/maps/dir/?api=1&origin=${fromLat},${fromLng}&destination=${toLat},${toLng}&travelmode=driving`;
+  const gmLink = document.getElementById('navGoogleLink');
+  if (gmLink) { gmLink.href = gmUrl; gmLink.style.display = 'inline-flex'; }
+
+  // Jeśli file:// — routing API są zablokowane przez CORS, nie ma sensu próbować
+  if (location.protocol === 'file:') {
+    const dist = haversineKm(fromLat, fromLng, toLat, toLng);
+    const distRoad = (dist * 1.3).toFixed(1);
+    const timeMin = Math.round(dist * 1.3 / 0.5);
+    routingControl = L.polyline([[fromLat,fromLng],[toLat,toLng]], {
+      color:'#e8ff47', weight:3, opacity:0.5, dashArray:'10,8'
+    }).addTo(map);
+    map.fitBounds(routingControl.getBounds(), { padding:[80,80] });
+    document.getElementById('navDist').textContent = distRoad;
+    document.getElementById('navTime').textContent = '~'+timeMin;
+    document.getElementById('navDestMeta').textContent = '⚠️ file:// — wgraj na GitHub Pages po pełną trasę';
+    return;
+  }
+
+  // ── HTTPS: próbuj prawdziwych API ──
+
+  // Próba 1: OSRM
+  try {
+    const r = await fetchRoute(
+      `https://router.project-osrm.org/route/v1/driving/${fromLng},${fromLat};${toLng},${toLat}?overview=full&geometries=geojson`,
+      {}, 8000
+    );
+    if (r.ok) {
+      const d = await r.json();
+      if (d.routes?.length) {
+        drawRoutePolyline(d.routes[0].geometry.coordinates.map(c => [c[1],c[0]]));
+        document.getElementById('navDist').textContent = (d.routes[0].distance/1000).toFixed(1);
+        document.getElementById('navTime').textContent = Math.round(d.routes[0].duration/60);
+        document.getElementById('navDestMeta').textContent = 'Trasa po drogach • samochodem';
+        return;
+      }
+    }
+  } catch(e) { console.warn('OSRM:', e.message); }
+
+  // Próba 2: Valhalla
+  try {
+    const r = await fetchRoute('https://valhalla1.openstreetmap.de/route', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        locations: [{lon:fromLng,lat:fromLat},{lon:toLng,lat:toLat}],
+        costing: 'auto'
+      })
+    }, 8000);
+    if (r.ok) {
+      const d = await r.json();
+      if (d.trip?.legs?.length) {
+        drawRoutePolyline(decodePolyline(d.trip.legs[0].shape, 6));
+        document.getElementById('navDist').textContent = d.trip.summary.length.toFixed(1);
+        document.getElementById('navTime').textContent = Math.round(d.trip.summary.time/60);
+        document.getElementById('navDestMeta').textContent = 'Trasa po drogach • samochodem';
+        return;
+      }
+    }
+  } catch(e) { console.warn('Valhalla:', e.message); }
+
+  // Fallback: linia prosta
+  const dist = haversineKm(fromLat, fromLng, toLat, toLng);
+  routingControl = L.polyline([[fromLat,fromLng],[toLat,toLng]], {
+    color:'#e8ff47', weight:3, opacity:0.5, dashArray:'10,8'
+  }).addTo(map);
+  map.fitBounds(routingControl.getBounds(), { padding:[80,80] });
+  document.getElementById('navDist').textContent = (dist*1.3).toFixed(1);
+  document.getElementById('navTime').textContent = '~'+Math.round(dist*1.3/0.5);
+  document.getElementById('navDestMeta').textContent = '⚠️ Serwer trasy niedostępny • kliknij Google Maps';
+}
+
+function endNavigation() {
+  if (routingControl) { try { map.removeLayer(routingControl); } catch(e){} routingControl = null; }
+  if (watchId) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+  isNavigating = false;
+  document.getElementById('navBar').classList.remove('visible');
+  const gmLink = document.getElementById('navGoogleLink');
+  if (gmLink) gmLink.style.display = 'none';
+}
+
+// ══════════════════════════════════════════════════════
+// OPINIE PARKINGÓW
+// ══════════════════════════════════════════════════════
+const reviewStars = {};
+
+function setReviewStar(parkingId, val) {
+  reviewStars[parkingId] = val;
+  const row = document.getElementById('starRow_' + parkingId);
+  if (!row) return;
+  row.querySelectorAll('.star').forEach((s, idx) => {
+    s.classList.toggle('on', idx < val);
+  });
+}
+
+async function loadReviews(parkingId) {
+  if (!window._fbDb || !window._fbFns) { setTimeout(() => loadReviews(parkingId), 300); return; }
+  const listEl = document.getElementById('reviewList_' + parkingId);
+  if (!listEl) return;
+  try {
+    const { collection, getDocs, query, orderBy, limit, where } = window._fbFns;
+    const q = query(collection(window._fbDb, 'reviews'), where('parkingId', '==', parkingId), orderBy('createdAt', 'desc'), limit(20));
+    const snap = await getDocs(q);
+    const reviews = [];
+    snap.forEach(d => reviews.push({ id: d.id, ...d.data() }));
+    const countEl = document.getElementById('reviewCount_' + parkingId);
+    if (countEl) countEl.textContent = reviews.length ? `(${reviews.length})` : '';
+    if (!reviews.length) {
+      listEl.innerHTML = '<div class="no-reviews">Brak opinii. Bądź pierwszy!</div>';
+      return;
+    }
+    // calc avg
+    const avg = (reviews.reduce((s,r) => s + (r.rating||0), 0) / reviews.length).toFixed(1);
+    const avgEl = document.getElementById('avgRating_' + parkingId);
+    if (avgEl) avgEl.textContent = `★ ${avg}`;
+    listEl.innerHTML = reviews.map(r => `
+      <div class="review-item">
+        <div class="review-top">
+          <span class="review-author">${escHtml(r.authorName||'Anonim')}</span>
+          <span class="review-stars">${'★'.repeat(r.rating||0)}${'☆'.repeat(5-(r.rating||0))}</span>
+        </div>
+        ${r.text ? `<div class="review-text">${escHtml(r.text)}</div>` : ''}
+        <div class="review-date">${r.createdAt?.toDate ? r.createdAt.toDate().toLocaleDateString('pl-PL') : ''}</div>
+      </div>
+    `).join('');
+  } catch(e) {
+    console.error('Błąd ładowania opinii:', e);
+    if (listEl) listEl.innerHTML = '<div class="no-reviews">Błąd ładowania opinii.</div>';
+  }
+}
+
+async function submitReview(parkingId, lat, lng, name) {
+  if (!currentUser) { showAuthToast(); return; }
+  const rating = reviewStars[parkingId] || 0;
+  if (!rating) { alert('Wybierz ocenę (gwiazdki).'); return; }
+  const text = (document.getElementById('reviewText_' + parkingId)?.value || '').trim();
+  const btn = document.querySelector(`#reviews_${parkingId} .review-submit`);
+  if (btn) { btn.textContent = 'Zapisywanie...'; btn.disabled = true; }
+  try {
+    const { collection, addDoc, serverTimestamp } = window._fbFns;
+    await addDoc(collection(window._fbDb, 'reviews'), {
+      parkingId, parkingName: name, parkingLat: lat, parkingLng: lng,
+      rating, text, authorName: currentUser.displayName || currentUser.email.split('@')[0],
+      authorUid: currentUser.uid, authorEmail: currentUser.email,
+      createdAt: serverTimestamp(), status: 'active'
+    });
+    reviewStars[parkingId] = 0;
+    const row = document.getElementById('starRow_' + parkingId);
+    if (row) row.querySelectorAll('.star').forEach(s => s.classList.remove('on'));
+    const textEl = document.getElementById('reviewText_' + parkingId);
+    if (textEl) textEl.value = '';
+    await loadReviews(parkingId);
+  } catch(e) { alert('Błąd zapisu opinii: ' + e.message); }
+  finally { if (btn) { btn.textContent = 'Dodaj opinię'; btn.disabled = false; } }
+}
+
+function escHtml(str) {
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ══════════════════════════════════════════════════════
+// ADMIN PANEL
+// ══════════════════════════════════════════════════════
+let isAdmin = false;
+let currentAdminTab = 'stats';
+
+async function checkAdminStatus(uid) {
+  if (!window._fbDb || !window._fbFns) return false;
+  try {
+    const { doc, getDoc } = window._fbFns;
+    const snap = await getDoc(doc(window._fbDb, 'admins', uid));
+    return snap.exists();
+  } catch(e) { return false; }
+}
+
+async function openAdmin() {
+  document.getElementById('userDropdown').classList.remove('open');
+  document.getElementById('adminOverlay').classList.remove('hidden');
+  adminShowTab('stats');
+}
+
+function closeAdmin() {
+  document.getElementById('adminOverlay').classList.add('hidden');
+}
+
+function adminShowTab(tab) {
+  currentAdminTab = tab;
+  document.querySelectorAll('.admin-tab').forEach(t => t.classList.remove('active'));
+  const tabEl = document.getElementById('aTab-' + tab);
+  if (tabEl) tabEl.classList.add('active');
+  switch(tab) {
+    case 'stats': adminLoadStats(); break;
+    case 'parkings': adminLoadParkings(); break;
+    case 'users': adminLoadUsers(); break;
+    case 'reviews': adminLoadReviews(); break;
+  }
+}
+
+async function adminLoadStats() {
+  const body = document.getElementById('adminBody');
+  body.innerHTML = '<div class="admin-loading">⏳ Ładowanie...</div>';
+  try {
+    const { collection, getDocs } = window._fbFns;
+    const [parkSnap, revSnap] = await Promise.all([
+      getDocs(collection(window._fbDb, 'parkings')),
+      getDocs(collection(window._fbDb, 'reviews'))
+    ]);
+    let pendingCount = 0;
+    parkSnap.forEach(d => { if ((d.data().status||'pending') === 'pending') pendingCount++; });
+    body.innerHTML = `
+      <div class="admin-stats-grid">
+        <div class="admin-stat-card"><b>${BUILT_IN.length}</b><span>Wbudowane parkingi</span></div>
+        <div class="admin-stat-card"><b>${parkSnap.size}</b><span>Parkingi użytkowników</span></div>
+        <div class="admin-stat-card"><b style="color:${pendingCount?'var(--accent)':'var(--a5)'}">${pendingCount}</b><span>Do weryfikacji</span></div>
+        <div class="admin-stat-card"><b>${revSnap.size}</b><span>Opinie</span></div>
+      </div>
+      <div style="font-size:.78rem;color:var(--muted);line-height:1.8;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px">
+        <b style="color:var(--text);display:block;margin-bottom:8px">ℹ️ Jak korzystać z panelu admina</b>
+        <b>Parkingi do weryfikacji</b> – przeglądaj nowe parkingi dodane przez użytkowników. Zatwierdź lub odrzuć.<br>
+        <b>Użytkownicy</b> – zarządzaj kontami, nadawaj/cofaj uprawnienia admina.<br>
+        <b>Opinie</b> – moderuj opinie użytkowników.<br><br>
+        <b style="color:var(--accent)">Uwaga:</b> Aby nadać komuś uprawnienia admina, dodaj dokument <code>admins/{uid}</code> w Firestore.
+      </div>`;
+  } catch(e) {
+    body.innerHTML = `<div class="admin-empty">❌ Błąd: ${e.message}</div>`;
+  }
+}
+
+async function adminLoadParkings() {
+  const body = document.getElementById('adminBody');
+  body.innerHTML = '<div class="admin-loading">⏳ Ładowanie parkingów...</div>';
+  try {
+    const { collection, getDocs } = window._fbFns;
+    const snap = await getDocs(collection(window._fbDb, 'parkings'));
+    const rows = [];
+    snap.forEach(d => rows.push({ id: d.id, ...d.data() }));
+    if (!rows.length) { body.innerHTML = '<div class="admin-empty">Brak parkingów użytkowników.</div>'; return; }
+    rows.sort((a,b) => (b.createdAt||0) - (a.createdAt||0));
+    body.innerHTML = `
+      <table class="admin-table">
+        <thead><tr>
+          <th>Nazwa</th><th>Adres</th><th>Dodał</th><th>Data</th><th>Status</th><th>Akcje</th>
+        </tr></thead>
+        <tbody>${rows.map(p => `
+          <tr>
+            <td><b>${escHtml(p.n||'—')}</b></td>
+            <td style="color:var(--muted)">${escHtml(p.a||'—')}</td>
+            <td style="color:var(--muted);font-size:.68rem">${escHtml(p.uid||'—').substring(0,10)}…</td>
+            <td style="color:var(--muted);font-size:.68rem">${p.createdAt ? new Date(p.createdAt).toLocaleDateString('pl-PL') : '—'}</td>
+            <td><span class="admin-badge ${p.status==='approved'?'badge-ok':p.status==='rejected'?'badge-rej':'badge-wait'}">${p.status==='approved'?'✓ Zatw.':p.status==='rejected'?'✕ Odrzuc.':'⏳ Oczekuje'}</span></td>
+            <td>
+              ${p.status!=='approved'?`<button class="admin-act-btn btn-approve" onclick="adminUpdateParking('${p.id}','approved')">✓ Zatwierdź</button>`:''}
+              ${p.status!=='rejected'?`<button class="admin-act-btn btn-reject" onclick="adminUpdateParking('${p.id}','rejected')">✕ Odrzuć</button>`:''}
+              <button class="admin-act-btn btn-delete" onclick="adminDeleteParking('${p.id}')">🗑</button>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+  } catch(e) {
+    body.innerHTML = `<div class="admin-empty">❌ Błąd: ${e.message}</div>`;
+  }
+}
+
+async function adminUpdateParking(docId, status) {
+  const { doc, updateDoc } = window._fbFns;
+  await updateDoc(doc(window._fbDb, 'parkings', docId), { status });
+  adminLoadParkings();
+}
+
+async function adminDeleteParking(docId) {
+  if (!confirm('Na pewno usunąć ten parking?')) return;
+  const { doc, deleteDoc } = window._fbFns;
+  await deleteDoc(doc(window._fbDb, 'parkings', docId));
+  adminLoadParkings();
+}
+
+async function adminLoadUsers() {
+  const body = document.getElementById('adminBody');
+  body.innerHTML = '<div class="admin-loading">⏳ Ładowanie użytkowników...</div>';
+  try {
+    const { collection, getDocs } = window._fbFns;
+    const [userSnap, adminSnap] = await Promise.all([
+      getDocs(collection(window._fbDb, 'userProfiles')),
+      getDocs(collection(window._fbDb, 'admins'))
+    ]);
+    const adminIds = new Set();
+    adminSnap.forEach(d => adminIds.add(d.id));
+    const users = [];
+    userSnap.forEach(d => users.push({ id: d.id, ...d.data() }));
+    if (!users.length) {
+      body.innerHTML = `<div class="admin-empty">Brak profili użytkowników w kolekcji <code>userProfiles</code>.<br><br><span style="font-size:.72rem;color:var(--muted)">Dodaj logikę zapisu profili przy rejestracji, aby zarządzać użytkownikami.</span></div>`;
+      return;
+    }
+    body.innerHTML = `
+      <table class="admin-table">
+        <thead><tr>
+          <th>Nazwa</th><th>E-mail</th><th>Rola</th><th>Akcje</th>
+        </tr></thead>
+        <tbody>${users.map(u => {
+          const adm = adminIds.has(u.id);
+          return `<tr>
+            <td><b>${escHtml(u.displayName||'—')}</b></td>
+            <td style="color:var(--muted)">${escHtml(u.email||'—')}</td>
+            <td><span class="admin-badge ${adm?'badge-admin':'badge-ok'}">${adm?'👑 Admin':'👤 User'}</span></td>
+            <td>
+              ${adm
+                ? `<button class="admin-act-btn btn-demote" onclick="adminSetAdmin('${u.id}',false)">Cofnij admina</button>`
+                : `<button class="admin-act-btn btn-promote" onclick="adminSetAdmin('${u.id}',true)">Nadaj admina</button>`}
+              <button class="admin-act-btn btn-delete" onclick="adminDeleteUser('${u.id}')">🗑</button>
+            </td>
+          </tr>`;
+        }).join('')}
+        </tbody>
+      </table>`;
+  } catch(e) {
+    body.innerHTML = `<div class="admin-empty">❌ Błąd: ${e.message}</div>`;
+  }
+}
+
+async function adminSetAdmin(uid, grant) {
+  const { doc, setDoc, deleteDoc } = window._fbFns;
+  if (grant) await setDoc(doc(window._fbDb, 'admins', uid), { grantedAt: Date.now(), grantedBy: currentUser.uid });
+  else await deleteDoc(doc(window._fbDb, 'admins', uid));
+  adminLoadUsers();
+}
+
+async function adminDeleteUser(uid) {
+  if (!confirm('Usunąć profil użytkownika? (Nie usuwa konta Firebase Auth)')) return;
+  const { doc, deleteDoc } = window._fbFns;
+  await deleteDoc(doc(window._fbDb, 'userProfiles', uid));
+  adminLoadUsers();
+}
+
+async function adminLoadReviews() {
+  const body = document.getElementById('adminBody');
+  body.innerHTML = '<div class="admin-loading">⏳ Ładowanie opinii...</div>';
+  try {
+    const { collection, getDocs, query, orderBy } = window._fbFns;
+    const snap = await getDocs(query(collection(window._fbDb, 'reviews'), orderBy('createdAt', 'desc')));
+    const reviews = [];
+    snap.forEach(d => reviews.push({ id: d.id, ...d.data() }));
+    if (!reviews.length) { body.innerHTML = '<div class="admin-empty">Brak opinii.</div>'; return; }
+    body.innerHTML = `
+      <table class="admin-table">
+        <thead><tr>
+          <th>Parking</th><th>Autor</th><th>Ocena</th><th>Treść</th><th>Data</th><th>Status</th><th>Akcje</th>
+        </tr></thead>
+        <tbody>${reviews.map(r => `
+          <tr>
+            <td style="max-width:120px"><b>${escHtml(r.parkingName||r.parkingId||'—')}</b></td>
+            <td style="color:var(--muted);font-size:.68rem">${escHtml(r.authorName||'—')}</td>
+            <td style="color:#ffd700">${'★'.repeat(r.rating||0)}</td>
+            <td style="color:var(--muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(r.text||'—')}</td>
+            <td style="color:var(--muted);font-size:.68rem">${r.createdAt?.toDate?r.createdAt.toDate().toLocaleDateString('pl-PL'):'—'}</td>
+            <td><span class="admin-badge ${r.status==='hidden'?'badge-rej':'badge-ok'}">${r.status==='hidden'?'Ukryta':'Aktywna'}</span></td>
+            <td>
+              ${r.status!=='hidden'?`<button class="admin-act-btn btn-reject" onclick="adminToggleReview('${r.id}','hidden')">Ukryj</button>`:`<button class="admin-act-btn btn-approve" onclick="adminToggleReview('${r.id}','active')">Pokaż</button>`}
+              <button class="admin-act-btn btn-delete" onclick="adminDeleteReview('${r.id}')">🗑</button>
+            </td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+  } catch(e) {
+    body.innerHTML = `<div class="admin-empty">❌ Błąd: ${e.message}</div>`;
+  }
+}
+
+async function adminToggleReview(docId, status) {
+  const { doc, updateDoc } = window._fbFns;
+  await updateDoc(doc(window._fbDb, 'reviews', docId), { status });
+  adminLoadReviews();
+}
+
+async function adminDeleteReview(docId) {
+  if (!confirm('Usunąć tę opinię?')) return;
+  const { doc, deleteDoc } = window._fbFns;
+  await deleteDoc(doc(window._fbDb, 'reviews', docId));
+  adminLoadReviews();
+}
+
+// TOGGLE SIDEBAR
+const sb=document.getElementById('sidebar'),tb=document.getElementById('toggle');
+let sbO=true;
+tb.onclick=()=>{sbO=!sbO;sb.classList.toggle('collapsed',!sbO);tb.textContent=sbO?'‹':'›';setTimeout(()=>map.invalidateSize(),320);};
+
+// ── INICJALIZACJA – rysuj mapę i listę od razu przy starcie ──
+document.getElementById('hc').textContent = ALL.length;
+buildMarkers();
+render('');
+</script>
+</body>
+</html>
